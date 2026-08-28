@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taojinbi-mav"
+version = "0.1.0"
+description = "淘宝“赚金币抵钱”内部三项纯浏览任务的受控自动化脚本（公开 Beta 准备中）"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "taojinbi-mav maintainers" }]
+keywords = ["taobao", "ocr", "automation", "android"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Utilities",
+]
+
+# 直接依赖必须显式声明（设计 9.2）：真机连接与 OCR 后端都在函数内惰性导入，
+# 因此离线测试可以在纯标准库环境中运行；安装时才需要下面这些包。
+dependencies = [
+  "uiautomator2>=3.0",
+  "easyocr>=1.7",
+  "opencv-python>=4.8",
+  "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# GPU 加速的可选依赖：只有需要 --gpu 时才安装。
+gpu = [
+  "torch>=2.0",
+  "torchvision>=0.15",
+]
+
+[project.urls]
+Homepage = "https://github.com/Linshi7766/taojinbi-Mav"
+Security = "https://github.com/Linshi7766/taojinbi-Mav/blob/main/SECURITY.md"
+Changelog = "https://github.com/Linshi7766/taojinbi-Mav/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+taojinbi_mav = ["*.pyi"]
