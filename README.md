@@ -38,6 +38,20 @@ Set-Location '<项目根目录>'
 & .\.venv\Scripts\python.exe .\scripts\run_taojinbi.py --serial <设备序列号> --task featured_goods --gpu --max-tasks 1
 ```
 
+## 循环守候（推荐日常用法）
+
+单次 CLI 只检查一轮；`scripts/wait_for_task.py` 在其外层提供"只要有任务就一直跑"的守候循环——每轮仍完整调用唯一 CLI（全部安全边界生效），循环层只做调度：
+
+```powershell
+& .\.venv\Scripts\python.exe .\scripts\wait_for_task.py --serial <设备序列号>
+```
+
+- 默认等任意已注册任务（`--task` 可指定单一类型）；命中即执行**一个**任务
+- 三档拟人节奏：未完成轮次间 1–3 分钟、做完一个任务 5–15 分钟、空窗检查 3–8 分钟
+- 自动收场：一个完整守候阶段（8 轮）无任务即结束；整场 240 分钟硬上限（`--session-deadline-min` 可调）
+- 异常即停：任何非零退出码立即结束守候，人工核对后再重启
+- 会话监控面板与 OCR 推理 sidecar（省去每轮模型冷启动）自动拉起，`--no-panel` / `--no-ocr-sidecar` 可关
+
 允许的任务参数为 `--task search`、`--task hashtag` 或 `--task featured_goods`；省略 `--task` 时扫描全部已注册任务。真机运行统一显式传 `--gpu`，逐步扩大前再调整 `--max-tasks N`。
 
 Windows 上通过该 CLI 正式运行时，会自动启动 `python -m taojinbi_mav.runtime.watch` 实时进度面板窗口。面板读取 `logs/` 中的 JSONL 事件日志，并在运行结束后自动关闭；这是预期行为。不要传 `--no-watch`，也不要主动关闭进度面板。

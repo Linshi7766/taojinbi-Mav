@@ -28,6 +28,8 @@
 ./pyproject.toml
 ./README.md
 ./scripts/run_taojinbi.py
+./scripts/wait_for_task.py
+./scripts/wait_panel.py
 ./SECURITY.md
 ./src/taojinbi_mav/__init__.py
 ./src/taojinbi_mav/ocr_ui.py
@@ -46,6 +48,9 @@
 ./src/taojinbi_mav/tasks/search.py
 ./tests/__init__.py
 ./tests/test_readme_runtime_contract.py
+./tests/test_wait_for_task.py
+./tests/test_wait_panel.py
+./tests/test_ocr_service.py
 ./tests/test_taojinbi_ocr_runtime.py
 ./tests/test_taojinbi_ocr_ui.py
 ./tests/test_taojinbi_runtime_config.py
@@ -66,7 +71,6 @@
 - 天猫系/、支付宝系/、淘宝活动系/、闲鱼系/、杂项/
 - img/ 旧模板素材、_ocr_*.png 临时截图
 - 旧版测试：test_launcher_safety / test_multi_task_launcher / test_taojinbi_task_ui / test_utils_lazy_ocr / test_utils_task_loop_integration
-- scripts/wait_for_task.py、scripts/wait_panel.py（私有守候脚本与整场监控面板：自动重检循环，不进入公开版运行合同）
 - docs/superpowers/plans/（内部计划，含设备信息）
 - 进度跟踪/、.workbuddy/、.venv/、.Python/、.cache/、.worktrees/、.superpowers/、logs/、__pycache__/
 - git 历史（导出将用全新初始提交，历史中旧设备地址不会进入公开仓库）
