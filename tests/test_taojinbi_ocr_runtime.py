@@ -1050,7 +1050,10 @@ class RefreshIntegrationTests(unittest.TestCase):
             return first
 
         patches = self._run_one_patches()
+        sleeps = []
         with patches[0], patches[1], patches[2], patches[3], \
+             patch.object(runtime, "_deadline_sleep",
+                          side_effect=lambda _d, s: sleeps.append(s)), \
              patch.object(runtime, "run_verified_immersive_progress", side_effect=fake_core), \
              patch.object(runtime, "refresh_task_after_disappearance", return_value=recovery) as refresh:
             result, browsed = runtime.run_one_safe_browse_task(
@@ -1058,7 +1061,9 @@ class RefreshIntegrationTests(unittest.TestCase):
             )
         self.assertTrue(browsed)
         self.assertEqual(result.reason, "refresh_not_found")
-        refresh.assert_called_once()
+        # 滞后宽限：末次复核前等待一次宽限秒数，然后才结论
+        self.assertEqual(refresh.call_count, 2)
+        self.assertIn(runtime.REFRESH_LAG_GRACE_S, sleeps)
         refresh_kwargs = refresh.call_args.kwargs
         self.assertEqual(refresh_kwargs.get("expected_progress"), 1)
         self.assertEqual(refresh_kwargs.get("expected_total"), 3)
@@ -1118,6 +1123,69 @@ class RefreshIntegrationTests(unittest.TestCase):
             )
         self.assertTrue(result.completed)
         self.assertEqual(enter.call_count, 1)
+
+    def test_refresh_not_found_grace_enables_recovery(self):
+        """滞后宽限后末次复核重新定位任务行：继续浏览而非立即误停。"""
+        first = ImmersiveRunResult(False, 1, 0, "task_row_unobserved", ())
+        target = BrowseTarget(
+            "发现精选好物", 2, 3, (300, 500), "去完成", (800, 500), 0.99
+        )
+        recoveries = iter([
+            runtime.RefreshRecoveryResult("not_found", attempts=2,
+                                          reason="refresh_not_found"),
+            runtime.RefreshRecoveryResult("continue", target=target,
+                                          attempts=1),
+            runtime.RefreshRecoveryResult("rotated", target=target,
+                                          attempts=1,
+                                          reason="task_total_changed"),
+        ])
+        sleeps = []
+
+        def fake_core(**kwargs):
+            kwargs["perform_one"]()
+            return first
+
+        patches = self._run_one_patches()
+        with patches[0] as enter, patches[1], patches[2], patches[3], \
+             patch.object(runtime, "_deadline_sleep",
+                          side_effect=lambda _d, s: sleeps.append(s)), \
+             patch.object(runtime, "run_verified_immersive_progress",
+                          side_effect=fake_core), \
+             patch.object(runtime, "refresh_task_after_disappearance",
+                          side_effect=lambda *a, **k: next(recoveries)):
+            result, browsed = runtime.run_one_safe_browse_task(
+                _WorkingDevice(), None, "发现精选好物", 3
+            )
+        self.assertIn(runtime.REFRESH_LAG_GRACE_S, sleeps)  # 宽限恰好一次
+        self.assertEqual(enter.call_count, 2)               # 恢复后再次进入
+        self.assertEqual(result.reason, "task_rotated_after_refresh")
+
+    def test_refresh_not_found_grace_expires_then_concludes(self):
+        """宽限后仍未找到：按原语义结论 refresh_not_found。"""
+        first = ImmersiveRunResult(False, 1, 0, "task_row_unobserved", ())
+        recovery = runtime.RefreshRecoveryResult(
+            "not_found", attempts=2, reason="refresh_not_found"
+        )
+        sleeps = []
+
+        def fake_core(**kwargs):
+            kwargs["perform_one"]()
+            return first
+
+        patches = self._run_one_patches()
+        with patches[0], patches[1], patches[2], patches[3], \
+             patch.object(runtime, "_deadline_sleep",
+                          side_effect=lambda _d, s: sleeps.append(s)), \
+             patch.object(runtime, "run_verified_immersive_progress",
+                          side_effect=fake_core), \
+             patch.object(runtime, "refresh_task_after_disappearance",
+                          return_value=recovery) as refresh:
+            result, browsed = runtime.run_one_safe_browse_task(
+                _WorkingDevice(), None, "发现精选好物", 3
+            )
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(sleeps.count(runtime.REFRESH_LAG_GRACE_S), 1)
+        self.assertEqual(result.reason, "refresh_not_found")
 
     def test_rotated_task_after_refresh_is_not_entered_again(self):
         first = ImmersiveRunResult(False, 1, 0, "task_row_unobserved", ())

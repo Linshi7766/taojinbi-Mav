@@ -83,6 +83,7 @@ RUNTIME_SHOT = "_ocr_runtime_shot.png"  # 单一临时截图，_ocr_ 前缀已�
 SWIPE_SETTLE = 2            # 翻页/加载稳定等待（GPU 下 OCR 快，可从 3s 收紧到 2s）
 BROWSE_PER_ROUND = 6        # 每个浏览往返覆盖的商品数上限（按剩余量自适应，见 perform_one）
 MAX_BACKS = 6              # 返回任务列表的最大 back 次数
+REFRESH_LAG_GRACE_S = 120  # 任务行消失后的展示滞后宽限（浏览计数常延迟数分钟反映）
 MAX_LIST_SCROLLS = 8       # 弹窗内滚动查找“好物沉浸看”的最大次数
 ENTRY_VALIDATION_RETRIES = 2  # 入口二次校验最多重试次数，防止 OCR 抖动导致无限循环
 ENTRY_RETRY_DELAY = 0.5       # 重试前短暂等待页面稳定
@@ -815,44 +816,62 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
             or remaining_refreshes <= 0
         ):
             break
-        recovery = refresh_task_after_disappearance(
-            d,
-            reader,
-            screen,
-            title,
-            max_attempts=remaining_refreshes,
-            expected_progress=result.progress,
-            expected_total=last_progress["total"] or total,
-            deadline=deadline,
-        )
-        refresh_attempts_used += recovery.attempts
-        print(
-            f"{label}：任务行消失后的刷新尝试 "
-            f"{refresh_attempts_used}/{REFRESH_RECOVERY_ATTEMPTS}，"
-            f"结果={recovery.status} {recovery.reason or ''}".strip()
-        )
-        if recovery.status == "continue" and recovery.target is not None:
-            last_progress["value"] = recovery.target.progress
-            last_progress["total"] = recovery.target.total
-            progress_state["after_return"] = True
-            progress_state["full_scan_used"] = False
-            continue
-        if recovery.status == "completed" and recovery.target is not None:
-            result = replace(
-                result,
-                completed=True,
-                progress=recovery.target.progress,
-                reason="completed_after_refresh",
+        grace_pending = entered["count"] > 0
+        resumed = False
+        while True:
+            recovery = refresh_task_after_disappearance(
+                d,
+                reader,
+                screen,
+                title,
+                max_attempts=remaining_refreshes,
+                expected_progress=result.progress,
+                expected_total=last_progress["total"] or total,
+                deadline=deadline,
             )
-        elif recovery.status == "not_found":
-            result = replace(result, reason="refresh_not_found")
-        elif recovery.status == "rotated":
-            result = replace(result, reason="task_rotated_after_refresh")
-        else:
+            refresh_attempts_used += recovery.attempts
+            print(
+                f"{label}：任务行消失后的刷新尝试 "
+                f"{refresh_attempts_used}/{REFRESH_RECOVERY_ATTEMPTS}，"
+                f"结果={recovery.status} {recovery.reason or ''}".strip()
+            )
+            if recovery.status == "continue" and recovery.target is not None:
+                last_progress["value"] = recovery.target.progress
+                last_progress["total"] = recovery.target.total
+                progress_state["after_return"] = True
+                progress_state["full_scan_used"] = False
+                resumed = True
+                break
+            if recovery.status == "completed" and recovery.target is not None:
+                result = replace(
+                    result,
+                    completed=True,
+                    progress=recovery.target.progress,
+                    reason="completed_after_refresh",
+                )
+                break
+            if recovery.status == "not_found" and grace_pending:
+                # 展示滞后宽限（2026-08-29：浏览计数常延迟数分钟才反映到
+                # 读数，立即结论会误停——宽限后做一次末次复核）。
+                grace_pending = False
+                refresh_attempts_used = 0   # 宽限后重置恢复预算
+                print(f"{label}：等待展示滞后宽限 "
+                      f"{REFRESH_LAG_GRACE_S} 秒后末次复核")
+                _deadline_sleep(deadline, REFRESH_LAG_GRACE_S)
+                continue
+            if recovery.status == "not_found":
+                result = replace(result, reason="refresh_not_found")
+                break
+            if recovery.status == "rotated":
+                result = replace(result, reason="task_rotated_after_refresh")
+                break
             result = replace(
                 result,
                 reason=recovery.reason or "refresh_recovery_failed",
             )
+            break
+        if resumed:
+            continue
         break
     browsed = entered["count"] > 0   # 是否真的进入并浏览过（供汇总口径一致）
     display_total = result.total_changes[-1][1] if result.total_changes else total
