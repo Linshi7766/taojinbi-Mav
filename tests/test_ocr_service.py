@@ -111,6 +111,43 @@ class SidecarClientFailureTests(unittest.TestCase):
         client.close()  # 幂等
 
 
+class NumpyLikeResultTests(unittest.TestCase):
+    """EasyOCR 真实结果含 np.int32/float32：序列化必须降为 Python 原生值。"""
+
+    class _NpInt:
+        def item(self):
+            return 25
+
+    class _NpFloat:
+        def item(self):
+            return 0.97
+
+    def test_numpy_like_scalars_survive_roundtrip(self):
+        np_int, np_float = self._NpInt, self._NpFloat
+
+        class _R:
+            def readtext(self, img):
+                return [
+                    [[np_int(), 10, np_int(), 40], "浏览10秒可领", np_float()]
+                ]
+
+        reader = _R()
+        server = ocr_service.OcrSidecarServer(reader)
+        threading.Thread(target=server.serve, daemon=True).start()
+        try:
+            assert ocr_service.wait_until_ready(server, timeout=5.0)
+            client = ocr_service.SidecarReader(
+                host=server.host, port=server.port
+            )
+            results = client.readtext(b"img")
+            self.assertEqual(results[0][0][0], 25)
+            self.assertEqual(results[0][2], 0.97)
+            self.assertIsInstance(results[0][0][0], int)
+            client.close()
+        finally:
+            server.close()
+
+
 class SidecarReaderFactoryTests(unittest.TestCase):
     def test_factory_ignores_model_args_and_binds_port(self):
         factory = ocr_service.make_sidecar_reader_factory(55555)

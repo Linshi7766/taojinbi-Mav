@@ -32,6 +32,15 @@ class SidecarError(RuntimeError):
     """sidecar 通信或推理失败的稳定错误。"""
 
 
+def _json_default(obj):
+    """numpy 标量/数组 → Python 原生值（EasyOCR 结果含 np.int32/float32）。"""
+    if hasattr(obj, "item"):
+        return obj.item()
+    if hasattr(obj, "tolist"):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 def _recv_exact(conn: socket.socket, size: int) -> bytes:
     chunks = []
     remaining = size
@@ -107,11 +116,17 @@ class OcrSidecarServer:
             try:
                 results = self.reader.readtext(image)
                 payload = json.dumps(
-                    results, ensure_ascii=False
+                    results, ensure_ascii=False, default=_json_default
                 ).encode("utf-8")
             except Exception as error:  # 推理失败返回错误帧，服务不断
+                import traceback
+
                 payload = json.dumps(
-                    {"error": f"{type(error).__name__}"}, ensure_ascii=False
+                    {
+                        "error": f"{type(error).__name__}",
+                        "traceback": traceback.format_exc(),
+                    },
+                    ensure_ascii=False,
                 ).encode("utf-8")
             _send_frame(conn, payload)
 
@@ -162,7 +177,8 @@ class SidecarReader:
             raise SidecarError(f"sidecar通信失败: {error}") from error
         data = json.loads(payload.decode("utf-8"))
         if isinstance(data, dict) and "error" in data:
-            raise SidecarError(f"sidecar推理失败: {data['error']}")
+            detail = data.get("traceback") or data["error"]
+            raise SidecarError(f"sidecar推理失败: {detail}")
         return data
 
     def close(self) -> None:
