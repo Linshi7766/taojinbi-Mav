@@ -174,6 +174,13 @@ class SidecarReader:
             self._conn = None
 
 
+def make_sidecar_reader_factory(port: int, host: str = DEFAULT_HOST):
+    """返回与 EasyOCR.Reader 同调用签名的工厂：忽略模型参数，连 sidecar。"""
+    def factory(_langs, gpu=None):
+        return SidecarReader(host=host, port=port)
+    return factory
+
+
 def wait_until_ready(server_or_addr, timeout: float = 120.0,
                      interval: float = 1.0) -> bool:
     """轮询 ping 直到 sidecar 就绪；超时返回 False（不抛异常）。"""

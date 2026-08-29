@@ -111,6 +111,15 @@ class SidecarClientFailureTests(unittest.TestCase):
         client.close()  # 幂等
 
 
+class SidecarReaderFactoryTests(unittest.TestCase):
+    def test_factory_ignores_model_args_and_binds_port(self):
+        factory = ocr_service.make_sidecar_reader_factory(55555)
+        reader = factory(["ch_sim", "en"], gpu=True)  # 模型参数被忽略
+        self.assertIsInstance(reader, ocr_service.SidecarReader)
+        self.assertEqual(reader.port, 55555)
+        reader.close()
+
+
 class WaitUntilReadyTests(unittest.TestCase):
     def test_times_out_when_server_never_starts(self):
         started = time.time()

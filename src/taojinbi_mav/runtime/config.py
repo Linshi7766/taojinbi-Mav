@@ -106,6 +106,12 @@ def build_ocr_arg_parser():
         help=f"单个任务时限秒数；默认 {DEFAULT_TASK_TIMEOUT}",
     )
     parser.add_argument(
+        "--ocr-sidecar-port",
+        type=nonnegative_int,
+        default=0,
+        help="OCR 推理 sidecar 端口；0 表示自行加载 EasyOCR（默认）",
+    )
+    parser.add_argument(
         "--run-timeout",
         type=positive_int,
         default=DEFAULT_RUN_TIMEOUT,

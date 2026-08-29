@@ -2849,5 +2849,44 @@ class SettleDiagnosticTests(unittest.TestCase):
         self.assertEqual(logger.events, [])
 
 
+class ReaderFactorySelectionTests(unittest.TestCase):
+    def test_explicit_factory_passes_through(self):
+        sentinel = lambda *a, **k: object()  # noqa: E731
+        self.assertIs(
+            runtime.resolve_reader_factory(sentinel, 12345), sentinel
+        )
+
+    def test_sidecar_port_returns_sidecar_reader(self):
+        from taojinbi_mav.runtime.ocr_service import SidecarReader
+
+        factory = runtime.resolve_reader_factory(None, 55555)
+        reader = factory(["ch_sim", "en"], gpu=True)
+        self.assertIsInstance(reader, SidecarReader)
+        self.assertEqual(reader.port, 55555)
+        reader.close()
+
+    def test_no_port_no_factory_returns_none(self):
+        self.assertIsNone(runtime.resolve_reader_factory(None, 0))
+
+
+class OcrSidecarPortWiringTests(unittest.TestCase):
+    def test_run_ocr_entry_passes_sidecar_port_to_run_entry(self):
+        outcome = RunOutcome(RunMode.EXECUTE, RunStatus.SUCCESS, "completed")
+        with patch.object(runtime, "_run_entry", return_value=outcome) as entry:
+            runtime.run_ocr_entry(
+                serial="test-device",
+                ocr_sidecar_port=12345,
+                run_timeout=60,
+                task_timeout=40,
+                recovery_timeout=10,
+                connect=lambda _s: _WorkingDevice(),
+                reader_factory=lambda *a, **k: object(),
+                logger_factory=_fake_logger_factory,
+            )
+        self.assertEqual(
+            entry.call_args.kwargs.get("ocr_sidecar_port"), 12345
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

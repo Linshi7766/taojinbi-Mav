@@ -45,6 +45,7 @@ from taojinbi_mav.ocr_ui import (
     scroll_to_top_then_find,
     titles_equivalent,
 )
+from taojinbi_mav.runtime.ocr_service import make_sidecar_reader_factory
 from taojinbi_mav.runtime.config import (
     DEFAULT_DRY_RUN_TIMEOUT,
     DEFAULT_RECOVERY_TIMEOUT,
@@ -1373,9 +1374,19 @@ def _execute_scan(device, reader, max_tasks, logger, mode, task_key=None,
     return RunOutcome(mode, RunStatus.SUCCESS, "completed", counts)
 
 
+def resolve_reader_factory(reader_factory, sidecar_port):
+    """reader 选择：显式注入优先；配置 sidecar 端口则连服务；否则 None。"""
+    if reader_factory is not None:
+        return reader_factory
+    if sidecar_port:
+        return make_sidecar_reader_factory(sidecar_port)
+    return None
+
+
 def _run_entry(mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
                task_timeout, recovery_timeout, task_key,
-               serial, use_gpu, connect, reader_factory, logger, clock, sleeper):
+               serial, use_gpu, connect, reader_factory, logger, clock, sleeper,
+               ocr_sidecar_port=0):
     """连接、OCR 初始化与按模式分派；所有异常只映射稳定 reason。"""
     deadline = Deadline.after(
         dry_run_timeout if dry_run else run_timeout,
@@ -1398,6 +1409,7 @@ def _run_entry(mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
         device = connect(resolved_serial)
     except Exception:
         return RunOutcome(mode, RunStatus.STARTUP_FAILED, "device_connect_failed")
+    reader_factory = resolve_reader_factory(reader_factory, ocr_sidecar_port)
     if reader_factory is None:
         import easyocr
 
@@ -1429,6 +1441,7 @@ def run_ocr_entry(
     use_gpu=None,
     max_tasks=1,
     dry_run=False,
+    ocr_sidecar_port=0,
     dry_run_timeout=DEFAULT_DRY_RUN_TIMEOUT,
     task_timeout=DEFAULT_TASK_TIMEOUT,
     run_timeout=DEFAULT_RUN_TIMEOUT,
@@ -1471,6 +1484,7 @@ def run_ocr_entry(
             use_gpu=use_gpu,
             connect=connect,
             reader_factory=reader_factory,
+            ocr_sidecar_port=ocr_sidecar_port,
             logger=logger,
             clock=clock,
             sleeper=sleeper,
@@ -1525,6 +1539,7 @@ def main(argv=None):
         serial=args.serial,
         use_gpu=args.gpu,
         max_tasks=args.max_tasks,
+        ocr_sidecar_port=args.ocr_sidecar_port,
         dry_run=args.dry_run,
         dry_run_timeout=args.dry_run_timeout,
         task_timeout=args.task_timeout,
