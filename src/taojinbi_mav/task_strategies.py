@@ -27,6 +27,10 @@ SEARCH_BADGE_MAX_SCROLLS = 40  # 徽标可见时的滑动上限（约 80 秒，�
 SEARCH_BADGE_ABSENCE_CONFIRMATIONS = 2  # 徽标连续消失次数（确认计时已满足）
 FEED_BADGE_MAX_CYCLES = 6      # 信息流徽标可见时的停留上限（约 72 秒，防呆）
 FEED_BADGE_ABSENCE_CONFIRMATIONS = 2    # 信息流徽标连续消失次数（确认计时已满足）
+SWIPE_X_JITTER_PX = 24                  # 滑动横向抖动像素（拟人节奏，避免固定轨迹）
+SWIPE_Y_JITTER_RATIO = 0.02             # 滑动纵向抖动（占屏高比例）
+SWIPE_DURATION_JITTER_S = 0.12          # 滑动时长抖动秒数
+SWIPE_DURATION_MIN_S = 0.25             # 滑动时长下限
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,21 @@ def select_task_strategy(profile):
     return None
 
 
+def _jittered_vertical_swipe(context, up):
+    """生成一次带轻微抖动的竖直滑动（坐标/时长均小扰动，拟人轨迹）。"""
+    width, height = context.screen
+    cx = width / 2 + random.uniform(-SWIPE_X_JITTER_PX, SWIPE_X_JITTER_PX)
+    down_y = height * 0.75 + random.uniform(-1, 1) * height * SWIPE_Y_JITTER_RATIO
+    up_y = height * 0.30 + random.uniform(-1, 1) * height * SWIPE_Y_JITTER_RATIO
+    duration = max(
+        SWIPE_DURATION_MIN_S,
+        0.4 + random.uniform(-SWIPE_DURATION_JITTER_S, SWIPE_DURATION_JITTER_S),
+    )
+    if up:
+        return (cx, down_y, cx, up_y, duration)
+    return (cx, up_y, cx, down_y, duration)
+
+
 def _execute_feed_browse(context, browse_count):
     """信息流停留+上滑浏览，时长跟随“浏览N秒可领”徽标（2026-08-29 实测看看# 10 秒）。
 
@@ -126,10 +145,7 @@ def _execute_feed_browse(context, browse_count):
         if not context.package_is_safe():
             return StrategyResult(False, "unsafe_package")
         context.sleep(DWELL_SECONDS)
-        context.swipe(
-            width // 2, int(height * 0.75),
-            width // 2, int(height * 0.30), 0.4,
-        )
+        context.swipe(*_jittered_vertical_swipe(context, up=True))
         context.sleep(SWIPE_SETTLE)
         cycles += 1
         spans = context.read_screen()
@@ -175,11 +191,9 @@ def _scroll_search_results(context):
     scrolls = 0
     max_scrolls = SEARCH_SCROLLS
     while scrolls < max_scrolls:
-        if scrolls % 2 == 0:
-            start_y, end_y = int(height * 0.75), int(height * 0.30)
-        else:
-            start_y, end_y = int(height * 0.30), int(height * 0.75)
-        context.swipe(width // 2, start_y, width // 2, end_y, 0.4)
+        context.swipe(
+            *_jittered_vertical_swipe(context, up=(scrolls % 2 == 0))
+        )
         context.sleep(SEARCH_SCROLL_INTERVAL)
         scrolls += 1
         spans = context.read_screen()

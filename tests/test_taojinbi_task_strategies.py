@@ -1,4 +1,5 @@
 ﻿import json
+import random
 import importlib
 import importlib.util
 import unittest
@@ -219,6 +220,67 @@ class FeedBrowseStrategyTests(unittest.TestCase):
                 strategies.FEED_BROWSE, context, 1
             )
         self.assertEqual(len(device.swipes), 0)
+
+
+class SwipeJitterTests(unittest.TestCase):
+    """滑动几何/时长轻微抖动：拟人节奏，方向交替与屏幕边界保持不变。"""
+
+    def _context(self, device):
+        return strategies.StrategyContext(
+            device=device,
+            reader=None,
+            screen=(1080, 1920),
+            read_screen=lambda: [],
+            screen_is_safe=lambda spans: True,
+            package_is_safe=lambda: True,
+            safe_tap=lambda _center: True,
+        )
+
+    def test_consecutive_feed_swipes_vary_in_geometry(self):
+        device = GestureDevice()
+        random.seed(20260829)
+        try:
+            with patch.object(strategies.time, "sleep"):
+                strategies.execute_task_strategy(
+                    strategies.FEED_BROWSE, self._context(device), 5
+                )
+        finally:
+            random.seed()
+        xs = [s[0] for s in device.swipes]
+        durations = [s[4] for s in device.swipes]
+        self.assertEqual(len(set(xs)), 5)          # 每次横向位置都不同
+        self.assertEqual(len(set(durations)), 5)   # 每次时长都不同
+        # 信息流保持只向上滑（拟人浏览方向）
+        self.assertTrue(all(s[1] > s[3] for s in device.swipes))
+
+    def test_search_swipes_alternate_direction_with_jitter(self):
+        device = GestureDevice()
+        random.seed(99)
+        try:
+            with patch.object(strategies.time, "sleep"):
+                strategies._scroll_search_results(self._context(device))
+        finally:
+            random.seed()
+        self.assertGreaterEqual(len(device.swipes), strategies.SEARCH_SCROLLS)
+        ups = [s for s in device.swipes if s[1] > s[3]]
+        downs = [s for s in device.swipes if s[1] < s[3]]
+        self.assertGreaterEqual(len(ups), 1)
+        self.assertGreaterEqual(len(downs), 1)
+
+    def test_swipe_stays_within_screen_bounds(self):
+        device = GestureDevice()
+        random.seed(7)
+        try:
+            with patch.object(strategies.time, "sleep"):
+                strategies.execute_task_strategy(
+                    strategies.FEED_BROWSE, self._context(device), 8
+                )
+        finally:
+            random.seed()
+        for s in device.swipes:
+            self.assertTrue(0 <= s[0] <= 1080, s)
+            self.assertTrue(0 <= s[1] <= 1920 and 0 <= s[3] <= 1920, s)
+            self.assertGreaterEqual(s[4], 0.25, s)
 
 
 class SearchBrowseStrategyTests(unittest.TestCase):
