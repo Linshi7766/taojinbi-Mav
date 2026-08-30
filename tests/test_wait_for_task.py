@@ -600,6 +600,77 @@ class SidecarSpawnIsolationTests(unittest.TestCase):
             )
 
 
+class StopFileTests(unittest.TestCase):
+    """stop 文件机制：存在 STOP 标记文件时守候优雅收场，不跑任何轮次。"""
+
+    def _args(self, **overrides):
+        import argparse
+
+        base = dict(
+            serial="TEST", task="any", max_tasks=0, daily_cap=0,
+            max_wait_cycles=2, min_gap_s=10, max_gap_s=20,
+            done_rest_min_s=300, done_rest_max_s=900,
+            grind_rest_min_s=60, grind_rest_max_s=180,
+            session_deadline_min=60, no_panel=True,
+            no_ocr_sidecar=True,
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def _run(self, tmp: Path, runner):
+        logger = wait_for_task.SessionEventLogger(tmp)
+        code = wait_for_task.run_supervisor(
+            self._args(), random.Random(7),
+            runner=runner, sleeper=lambda s: None,
+            session_logger=logger,
+            sidecar_spawner=lambda: (None, None),
+        )
+        return code, logger
+
+    def test_stop_file_halts_without_running_any_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            wait_for_task.LOGS_DIR = logs
+            (logs / "STOP").write_text("", encoding="utf-8")
+            calls = {"runner": 0}
+
+            def runner():
+                calls["runner"] += 1
+                return 0
+
+            code, logger = self._run(logs, runner)
+            self.assertEqual(code, 0)
+            self.assertEqual(calls["runner"], 0)
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(events[-1]["event"], "session_finished")
+            self.assertEqual(events[-1]["reason"], "stop_file")
+            self.assertFalse((logs / "STOP").exists())
+
+    def test_no_stop_file_means_normal_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            wait_for_task.LOGS_DIR = logs
+            calls = {"runner": 0}
+
+            def runner():
+                calls["runner"] += 1
+                events = [
+                    {"event": "run_started", "counts": {"detected": 0}},
+                    {"event": "run_finished", "reason": "completed",
+                     "counts": {"detected": 0, "attempted": 0}},
+                ]
+                (logs / "taojinbi-child.jsonl").write_text(
+                    "\n".join(json.dumps(e) for e in events), encoding="utf-8"
+                )
+                return 0
+
+            self._run(logs, runner)
+            self.assertGreater(calls["runner"], 0)
+
+
 class SourceCheckoutBootstrapTests(unittest.TestCase):
     def test_help_works_without_editable_install_or_pythonpath(self):
         python = getattr(sys, "_base_executable", sys.executable)

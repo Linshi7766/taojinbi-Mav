@@ -46,6 +46,7 @@ from taojinbi_mav.runtime.ocr_service import wait_until_ready
 CLI_PATH = REPO_ROOT / "scripts" / "run_taojinbi.py"
 LOGS_DIR = REPO_ROOT / "logs"
 STATE_PATH = LOGS_DIR / "wait_state.json"
+STOP_FILE_NAME = "STOP"
 
 
 def _parse_ready_line(line: str):
@@ -443,6 +444,16 @@ def run_supervisor(
         )
 
     while True:
+        # stop 标记文件：后台会话/用户可用它优雅停止守候（一次性，
+        # 处理后删除；下次运行不受影响）。
+        stop_marker = LOGS_DIR / STOP_FILE_NAME
+        if stop_marker.exists():
+            print("检测到 stop 标记文件，守候优雅收场")
+            try:
+                stop_marker.unlink()
+            except OSError:
+                pass
+            return finish("stop_file", 0)
         if deadline_reached():
             print(
                 f"守候结束：stop_deadline（本场已执行 "
