@@ -31,6 +31,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install test dependencies
+        # 私有专属测试模块（test_taojinbi_task_ui 等）顶层 import lxml，
+        # 传递依赖 opencv-python（headless 无 GUI，CI 友好）。
+        run: pip install lxml opencv-python-headless
+
       - name: Compile public sources
         shell: bash
         run: |
