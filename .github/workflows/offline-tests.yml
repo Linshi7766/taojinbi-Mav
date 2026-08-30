@@ -52,7 +52,15 @@ jobs:
       - name: Run offline test suite
         env:
           PYTHONPATH: src
-        run: python -m unittest discover -s tests -t . -v
+        run: |
+          # 私有专属 legacy 测试需要 uiautomator2 / easyocr / torch 等重依赖
+          # 才能跑通（公开仓库无这 3 个测试，所以公开 CI 一直能跑过）。CI
+          # 统一排除：本地完整运行请 pip install uiautomator2 easyocr
+          # torch --index-url https://download.pytorch.org/whl/cpu ddddocr。
+          python -m unittest discover -s tests -t . -v \
+            --ignore tests/test_taojinbi_task_ui.py \
+            --ignore tests/test_utils_lazy_ocr.py \
+            --ignore tests/test_utils_task_loop_integration.py
 
       - name: Fail if any device or model was touched
         shell: bash
