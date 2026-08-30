@@ -943,6 +943,23 @@ def _emit_task_finished(logger, task_log_key, status, reason):
         logger.emit("task_finished", task_key=task_log_key, status=status, reason=reason)
 
 
+def _scroll_coin_page_to_top(d, screen, deadline=None, max_swipes=3):
+    """淘金币页滚回顶部：连续向上滑（页面下移方向），最多 max_swipes 次。
+
+    真机经验：页面可能被系统/用户滚动到推荐区，推荐卡片上的"赚更多金币"
+    是假入口（点进去不是任务弹窗）。调用方需已确认包名安全（淘金币页）。
+    """
+    width, height = screen
+    for _ in range(max_swipes):
+        _checkpoint(deadline)
+        d.swipe(
+            width // 2, int(height * 0.45),
+            width // 2, int(height * 0.70),
+            0.3,
+        )
+        _deadline_sleep(deadline, SWIPE_SETTLE)
+
+
 def _reopen_task_popup(d, reader, screen, deadline=None):
     """在淘金币首页点击"赚更多金币"重新打开任务弹窗并等待列表锚点。
 
@@ -956,6 +973,12 @@ def _reopen_task_popup(d, reader, screen, deadline=None):
             spans = ocr_screen(d, reader)
             if not in_taobao_and_safe(d, spans):
                 return False
+            if attempt == 0:
+                # 首attempt先滚回顶部：页面可能停在推荐区（假"赚更多金币"入口）。
+                _scroll_coin_page_to_top(d, screen, deadline=deadline)
+                spans = ocr_screen(d, reader)
+                if not in_taobao_and_safe(d, spans):
+                    return False
 
             action = find_unique_ocr_span(spans, MORE_COINS_ACTION)
             _checkpoint(deadline)

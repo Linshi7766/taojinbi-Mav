@@ -137,6 +137,9 @@ class _WorkingDevice:
     def app_current(self):
         return {"package": runtime.TB_APP}
 
+    def swipe(self, *_args):
+        return None
+
 
 class _GestureDevice(_WorkingDevice):
     def __init__(self):
@@ -1232,6 +1235,34 @@ class PopupReopenRetryTests(unittest.TestCase):
             )
         return spans
 
+    def test_scrolls_to_top_before_first_action_click(self):
+        # 页面可能被系统/用户滚动到推荐区：推荐卡片上的"赚更多金币"是
+        # 假入口，点进去不是任务弹窗。首attempt必须先滚回顶部再点击。
+        device = _GestureDevice()
+        spans = self._coin_page_spans(True)
+        with patch.object(
+            runtime, "ocr_screen",
+            side_effect=[spans, spans],
+        ) as read, patch.object(
+            runtime, "in_taobao_and_safe", return_value=True
+        ) as safe, patch.object(
+            runtime, "safe_tap", return_value=True
+        ) as tap, patch.object(
+            runtime, "retry_entry_validation", return_value=True
+        ), patch.object(
+            runtime, "_deadline_sleep"
+        ):
+            result = runtime._reopen_task_popup(
+                device, None, (1080, 1920), deadline=None
+            )
+        self.assertTrue(result)
+        # 滚顶 = 手指从 y0.45 滑到 y0.70（页面上滚回顶部）
+        self.assertTrue(
+            any(s[0] == s[2] and s[3] > s[1] for s in device.swipes),
+            f"应包含向上滚顶动作: {device.swipes}",
+        )
+        tap.assert_called_once_with(device, (500, 800), (1080, 1920))
+
     def test_retries_when_action_is_missing_on_first_ocr(self):
         device = _WorkingDevice()
         with patch.object(
@@ -1265,7 +1296,7 @@ class PopupReopenRetryTests(unittest.TestCase):
         with patch.object(
             runtime,
             "ocr_screen",
-            side_effect=[missing] * (runtime.ENTRY_VALIDATION_RETRIES + 1),
+            side_effect=[missing] * (runtime.ENTRY_VALIDATION_RETRIES + 2),
         ) as read, patch.object(
             runtime, "in_taobao_and_safe", return_value=True
         ) as safe, patch.object(
@@ -1279,7 +1310,7 @@ class PopupReopenRetryTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(
-            read.call_count, runtime.ENTRY_VALIDATION_RETRIES + 1
+            read.call_count, runtime.ENTRY_VALIDATION_RETRIES + 2
         )
         self.assertEqual(safe.call_count, read.call_count)
         tap.assert_not_called()
@@ -1296,7 +1327,7 @@ class PopupReopenRetryTests(unittest.TestCase):
         with patch.object(
             runtime,
             "ocr_screen",
-            side_effect=[duplicate] * (runtime.ENTRY_VALIDATION_RETRIES + 1),
+            side_effect=[duplicate] * (runtime.ENTRY_VALIDATION_RETRIES + 2),
         ) as read, patch.object(
             runtime, "in_taobao_and_safe", return_value=True
         ) as safe, patch.object(runtime, "safe_tap") as tap, patch.object(
@@ -1308,7 +1339,7 @@ class PopupReopenRetryTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(
-            read.call_count, runtime.ENTRY_VALIDATION_RETRIES + 1
+            read.call_count, runtime.ENTRY_VALIDATION_RETRIES + 2
         )
         self.assertEqual(safe.call_count, read.call_count)
         tap.assert_not_called()
@@ -1344,7 +1375,10 @@ class PopupReopenRetryTests(unittest.TestCase):
 
         def read_screen(*_args, **_kwargs):
             events.append("ocr")
+            # attempt0 首读有按钮 → 滚顶后重读仍有按钮（主页顶部）→ 点击并
+            # 校验失败 → attempt1/2 无按钮 → 有界失败
             frames = [
+                self._coin_page_spans(True),
                 self._coin_page_spans(True),
                 self._coin_page_spans(False),
                 self._coin_page_spans(False),
@@ -1382,11 +1416,13 @@ class PopupReopenRetryTests(unittest.TestCase):
 
         self.assertFalse(result)
         first_validation = events.index("validate")
-        ocr_positions = [i for i, event in enumerate(events) if event == "ocr"]
-        self.assertGreaterEqual(len(ocr_positions), 2)
-        second_ocr = ocr_positions[1]
-        self.assertLess(first_validation, second_ocr)
-        self.assertEqual(read.call_count, 3)
+        # 校验失败后必须重新读屏再重试（而不是原地重复点击）
+        ocrs_after_validation = [
+            i for i, event in enumerate(events)
+            if event == "ocr" and i > first_validation
+        ]
+        self.assertTrue(ocrs_after_validation)
+        self.assertEqual(read.call_count, 4)
         self.assertEqual(safe.call_count, read.call_count)
         self.assertEqual(tap.call_count, 1)
 
