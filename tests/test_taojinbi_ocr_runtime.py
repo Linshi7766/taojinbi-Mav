@@ -540,6 +540,21 @@ class EntryValidationRetryTests(unittest.TestCase):
         self.assertEqual(result, "stable-candidate")
         self.assertEqual(attempts, [1, 2, 3])
 
+    def test_false_candidate_does_not_short_circuit_retries(self):
+        # on_task_list 返回布尔：False 表示"不在列表"，必须继续重试，
+        # 不能把 False 当成有效结果提前返回（否则 OCR 抖动被误报为锚点缺失）。
+        attempts = []
+
+        def validate():
+            attempts.append(1)
+            return False
+
+        result = runtime.retry_entry_validation(
+            validate, max_retries=2, retry_delay=0,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(attempts, [1, 1, 1])
+
     def test_stops_after_two_retries_when_entry_never_stabilizes(self):
         attempts = []
 

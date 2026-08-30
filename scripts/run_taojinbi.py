@@ -462,6 +462,9 @@ def retry_entry_validation(
 ):
     """有界重试入口验证，返回最后一次稳定目标，失败返回 None。
 
+    回调返回真值（True / 目标对象 / 非空字符串）视为成功；falsy（False /
+    None）视为失败并继续重试——布尔校验（如 on_task_list）返回 False 时
+    绝不能提前短路，否则 OCR 抖动会被误报为锚点缺失。
     DeadlineExceeded 显式透传（绝不捕获后降级）；其余异常按类型名脱敏后重试。
     等待只能用可注入 sleeper（deadline 场景传入 deadline sleep）。
     """
@@ -475,7 +478,7 @@ def retry_entry_validation(
         except Exception as error:
             print(f"入口校验失败，安全重试：{type(error).__name__}")
             candidate = None
-        if candidate is not None:
+        if candidate:
             return candidate
         checkpoint()
         if attempt < max_retries and retry_delay > 0:
