@@ -245,6 +245,23 @@ ALLOWED_SESSION_LOG_FIELDS = frozenset({
 })
 
 
+def _terminate_proc(proc, timeout: float = 3.0) -> None:
+    """完整清理子进程：terminate → wait → kill → wait（幂等）。"""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except Exception:
+        pass
+    if proc.poll() is None:
+        try:
+            proc.kill()
+            proc.wait(timeout=timeout)
+        except Exception:
+            pass
+
+
 class SessionEventLogger:
     """守候会话事件日志（JSONL）：供 wait_panel 整场监控面板读取。
 
@@ -399,208 +416,213 @@ def run_supervisor(
     if session_logger is None:
         session_logger = SessionEventLogger(LOGS_DIR)
     sidecar_proc = None
+    panel_proc = None
     sidecar_port = 0
     if not getattr(args, "no_ocr_sidecar", False):
         spawn_sidecar = sidecar_spawner or _spawn_ocr_sidecar
         sidecar_proc, sidecar_addr = spawn_sidecar()
         if sidecar_addr:
             sidecar_port = sidecar_addr[1]
-    session_started_ts = clock()
-    session_deadline_s = args.session_deadline_min * 60
-    today = time.strftime("%Y-%m-%d")
-    state_path = state_path or STATE_PATH
-    tasks_done_total = load_daily_done(state_path, today)
-    session_start_count = tasks_done_total
-    session_logger.emit(
-        "session_started",
-        task=args.task,
-        max_tasks=args.max_tasks,
-        daily_cap=args.daily_cap,
-        session_deadline_min=args.session_deadline_min,
-    )
-    if not getattr(args, "no_panel", False):
-        _spawn_wait_panel()
-
-    stop_heartbeat = threading.Event()
-    if runner is None:
-        # 心跳：面板据此判断主进程存活（90 秒无心跳即自动退出）。
-        def _heartbeat():
-            while not stop_heartbeat.wait(30.0):
-                session_logger.emit("heartbeat")
-
-        threading.Thread(target=_heartbeat, daemon=True).start()
-
-    def finish(reason: str, code: int) -> int:
-        stop_heartbeat.set()
-        if sidecar_proc is not None:
-            try:
-                sidecar_proc.terminate()
-            except Exception:
-                pass
+    try:
+        session_started_ts = clock()
+        session_deadline_s = args.session_deadline_min * 60
+        today = time.strftime("%Y-%m-%d")
+        state_path = state_path or STATE_PATH
+        tasks_done_total = load_daily_done(state_path, today)
+        session_start_count = tasks_done_total
         session_logger.emit(
-            "session_finished",
-            reason=reason,
-            tasks_session=tasks_done_total - session_start_count,
-            tasks_today=tasks_done_total,
+            "session_started",
+            task=args.task,
+            max_tasks=args.max_tasks,
+            daily_cap=args.daily_cap,
+            session_deadline_min=args.session_deadline_min,
         )
-        return code
+        if not getattr(args, "no_panel", False):
+            panel_proc = _spawn_wait_panel()
 
-    if args.daily_cap and tasks_done_total >= args.daily_cap:
-        print(
-            f"守候结束：stop_daily_cap（今日已执行 {tasks_done_total}"
-            f"/{args.daily_cap}）"
-        )
-        return finish("stop_daily_cap", 0)
+        stop_heartbeat = threading.Event()
+        if runner is None:
+            # 心跳：面板据此判断主进程存活（90 秒无心跳即自动退出）。
+            def _heartbeat():
+                while not stop_heartbeat.wait(30.0):
+                    session_logger.emit("heartbeat")
 
-    def deadline_reached():
-        return bool(session_deadline_s) and (
-            clock() - session_started_ts >= session_deadline_s
-        )
+            threading.Thread(target=_heartbeat, daemon=True).start()
 
-    while True:
-        # stop 标记文件：后台会话/用户可用它优雅停止守候（一次性，
-        # 处理后删除；下次运行不受影响）。
-        stop_marker = LOGS_DIR / STOP_FILE_NAME
-        if stop_marker.exists():
-            print("检测到 stop 标记文件，守候优雅收场")
-            try:
-                stop_marker.unlink()
-            except OSError:
-                pass
-            return finish("stop_file", 0)
-        if deadline_reached():
-            print(
-                f"守候结束：stop_deadline（本场已执行 "
-                f"{tasks_done_total - session_start_count} 个任务）"
-            )
-            return finish("stop_deadline", 0)
-
-        # ---- 内层守候阶段：最多 max_wait_cycles 轮，命中或用尽即出 ----
-        phase_outcome = "empty"
-        found_status = None
-        error_exit_code = 0
-        cycles_done = 0
-        while True:
-            if cycles_done >= args.max_wait_cycles:
-                phase_outcome = "empty"
-                break
-            if deadline_reached():
-                phase_outcome = "deadline"
-                break
-            cycle_index = cycles_done + 1
-            scope = (
-                "扫描全部注册任务"
-                if args.task == "any"
-                else f"--task {args.task}"
-            )
-            print(
-                f"[守候 {cycle_index}/{args.max_wait_cycles}] "
-                f"启动唯一 CLI：{scope} --max-tasks 1"
-            )
-            session_logger.emit("cycle_started", cycle=cycle_index)
-            cycle_started_ts = time.time()
-            if runner is None:
-                proc = subprocess.run(build_child_args(args, sidecar_port))
-                exit_code = proc.returncode
-            else:
-                exit_code = runner()
-            outcome = read_run_outcome(LOGS_DIR, cycle_started_ts)
-            if outcome is None:
-                if exit_code == 0:
-                    print("守候结束：退出码 0 但日志无法确认该轮结果，保守停止")
-                    return finish("stop_unverified_log", 3)
-                detected, found_status = 0, None
-            else:
-                detected, _attempted, found_status = outcome
+        def finish(reason: str, code: int) -> int:
+            stop_heartbeat.set()
+            if sidecar_proc is not None:
+                try:
+                    sidecar_proc.terminate()
+                except Exception:
+                    pass
             session_logger.emit(
-                "cycle_finished",
-                cycle=cycle_index,
-                exit_code=exit_code,
-                detected=detected,
-                task_status=found_status,
+                "session_finished",
+                reason=reason,
+                tasks_session=tasks_done_total - session_start_count,
+                tasks_today=tasks_done_total,
             )
-            decision = decide_after_cycle(exit_code, detected)
-            cycles_done += 1
-            if decision == "continue":
+            return code
+
+        if args.daily_cap and tasks_done_total >= args.daily_cap:
+            print(
+                f"守候结束：stop_daily_cap（今日已执行 {tasks_done_total}"
+                f"/{args.daily_cap}）"
+            )
+            return finish("stop_daily_cap", 0)
+
+        def deadline_reached():
+            return bool(session_deadline_s) and (
+                clock() - session_started_ts >= session_deadline_s
+            )
+
+        while True:
+            # stop 标记文件：后台会话/用户可用它优雅停止守候（一次性，
+            # 处理后删除；下次运行不受影响）。
+            stop_marker = LOGS_DIR / STOP_FILE_NAME
+            if stop_marker.exists():
+                print("检测到 stop 标记文件，守候优雅收场")
+                try:
+                    stop_marker.unlink()
+                except OSError:
+                    pass
+                return finish("stop_file", 0)
+            if deadline_reached():
+                print(
+                    f"守候结束：stop_deadline（本场已执行 "
+                    f"{tasks_done_total - session_start_count} 个任务）"
+                )
+                return finish("stop_deadline", 0)
+
+            # ---- 内层守候阶段：最多 max_wait_cycles 轮，命中或用尽即出 ----
+            phase_outcome = "empty"
+            found_status = None
+            error_exit_code = 0
+            cycles_done = 0
+            while True:
                 if cycles_done >= args.max_wait_cycles:
                     phase_outcome = "empty"
                     break
                 if deadline_reached():
                     phase_outcome = "deadline"
                     break
-                delay = next_delay(rng, args.min_gap_s, args.max_gap_s)
-                print(f"本轮无候选，{delay:.0f} 秒后检查下一轮（Ctrl+C 可随时停止）")
-                session_logger.emit("rest_started", kind="gap", seconds=delay)
-                sleeper(delay)
-                continue
-            if decision == "stop_found":
-                phase_outcome = "found"
+                cycle_index = cycles_done + 1
+                scope = (
+                    "扫描全部注册任务"
+                    if args.task == "any"
+                    else f"--task {args.task}"
+                )
+                print(
+                    f"[守候 {cycle_index}/{args.max_wait_cycles}] "
+                    f"启动唯一 CLI：{scope} --max-tasks 1"
+                )
+                session_logger.emit("cycle_started", cycle=cycle_index)
+                cycle_started_ts = time.time()
+                if runner is None:
+                    proc = subprocess.run(build_child_args(args, sidecar_port))
+                    exit_code = proc.returncode
+                else:
+                    exit_code = runner()
+                outcome = read_run_outcome(LOGS_DIR, cycle_started_ts)
+                if outcome is None:
+                    if exit_code == 0:
+                        print("守候结束：退出码 0 但日志无法确认该轮结果，保守停止")
+                        return finish("stop_unverified_log", 3)
+                    detected, found_status = 0, None
+                else:
+                    detected, _attempted, found_status = outcome
+                session_logger.emit(
+                    "cycle_finished",
+                    cycle=cycle_index,
+                    exit_code=exit_code,
+                    detected=detected,
+                    task_status=found_status,
+                )
+                decision = decide_after_cycle(exit_code, detected)
+                cycles_done += 1
+                if decision == "continue":
+                    if cycles_done >= args.max_wait_cycles:
+                        phase_outcome = "empty"
+                        break
+                    if deadline_reached():
+                        phase_outcome = "deadline"
+                        break
+                    delay = next_delay(rng, args.min_gap_s, args.max_gap_s)
+                    print(f"本轮无候选，{delay:.0f} 秒后检查下一轮（Ctrl+C 可随时停止）")
+                    session_logger.emit("rest_started", kind="gap", seconds=delay)
+                    sleeper(delay)
+                    continue
+                if decision == "stop_found":
+                    phase_outcome = "found"
+                    break
+                phase_outcome = "error"
+                error_exit_code = exit_code
                 break
-            phase_outcome = "error"
-            error_exit_code = exit_code
-            break
 
-        # ---- 阶段结果分派 ----
-        if phase_outcome == "found":
-            tasks_done_total += 1
-            session_logger.emit(
-                "task_done",
-                tasks_session=tasks_done_total - session_start_count,
-                tasks_today=tasks_done_total,
-                task_status=found_status,
-            )
-            if args.daily_cap:
-                save_daily_done(state_path, today, tasks_done_total)
-                if tasks_done_total >= args.daily_cap:
+            # ---- 阶段结果分派 ----
+            if phase_outcome == "found":
+                tasks_done_total += 1
+                session_logger.emit(
+                    "task_done",
+                    tasks_session=tasks_done_total - session_start_count,
+                    tasks_today=tasks_done_total,
+                    task_status=found_status,
+                )
+                if args.daily_cap:
+                    save_daily_done(state_path, today, tasks_done_total)
+                    if tasks_done_total >= args.daily_cap:
+                        print(
+                            f"守候结束：stop_daily_cap（今日已执行 "
+                            f"{tasks_done_total}/{args.daily_cap}）；"
+                            "结算与到账请人工核对余额"
+                        )
+                        return finish("stop_daily_cap", 0)
+                if args.max_tasks and (
+                    tasks_done_total - session_start_count
+                ) >= args.max_tasks:
                     print(
-                        f"守候结束：stop_daily_cap（今日已执行 "
-                        f"{tasks_done_total}/{args.daily_cap}）；"
-                        "结算与到账请人工核对余额"
+                        f"守候结束：stop_task_budget（本场已执行 "
+                        f"{tasks_done_total - session_start_count}"
+                        f"/{args.max_tasks}）；结算与到账请人工核对余额"
                     )
-                    return finish("stop_daily_cap", 0)
-            if args.max_tasks and (
-                tasks_done_total - session_start_count
-            ) >= args.max_tasks:
+                    return finish("stop_task_budget", 0)
+                tier = rest_tier_for(found_status)
+                rest = next_rest_seconds(rng, args, tier)
                 print(
-                    f"守候结束：stop_task_budget（本场已执行 "
-                    f"{tasks_done_total - session_start_count}"
-                    f"/{args.max_tasks}）；结算与到账请人工核对余额"
+                    f"任务已执行（结果档位：{tier}），{rest:.0f} 秒后继续守候"
                 )
-                return finish("stop_task_budget", 0)
-            tier = rest_tier_for(found_status)
-            rest = next_rest_seconds(rng, args, tier)
-            print(
-                f"任务已执行（结果档位：{tier}），{rest:.0f} 秒后继续守候"
-            )
-            session_logger.emit("rest_started", kind=tier, seconds=rest)
-            sleeper(rest)
-            continue
-        if phase_outcome == "deadline":
-            print(
-                f"守候结束：stop_deadline（本场已执行 "
-                f"{tasks_done_total - session_start_count} 个任务）"
-            )
-            return finish("stop_deadline", 0)
-        if phase_outcome == "error":
-            if error_exit_code == EXIT_INTERRUPT:
-                print("守候结束：stop_interrupt")
-                return finish("stop_interrupt", EXIT_INTERRUPT)
-            if error_exit_code == EXIT_ATTEMPTED_UNCONFIRMED:
+                session_logger.emit("rest_started", kind=tier, seconds=rest)
+                sleeper(rest)
+                continue
+            if phase_outcome == "deadline":
                 print(
-                    "守候结束：stop_attempted（已执行但未确认完成）；"
-                    "请人工核对余额后再决定是否重启守候"
+                    f"守候结束：stop_deadline（本场已执行 "
+                    f"{tasks_done_total - session_start_count} 个任务）"
                 )
-                return finish("stop_attempted", EXIT_ATTEMPTED_UNCONFIRMED)
+                return finish("stop_deadline", 0)
+            if phase_outcome == "error":
+                if error_exit_code == EXIT_INTERRUPT:
+                    print("守候结束：stop_interrupt")
+                    return finish("stop_interrupt", EXIT_INTERRUPT)
+                if error_exit_code == EXIT_ATTEMPTED_UNCONFIRMED:
+                    print(
+                        "守候结束：stop_attempted（已执行但未确认完成）；"
+                        "请人工核对余额后再决定是否重启守候"
+                    )
+                    return finish("stop_attempted", EXIT_ATTEMPTED_UNCONFIRMED)
+                print(
+                    f"守候结束：stop_error（exit={error_exit_code}）；"
+                    "请人工排查后再决定是否重启守候"
+                )
+                return finish("stop_error", error_exit_code)
             print(
-                f"守候结束：stop_error（exit={error_exit_code}）；"
-                "请人工排查后再决定是否重启守候"
+                f"守候结束：stop_no_tasks（一个守候阶段内未见任务，"
+                f"本场共执行 {tasks_done_total - session_start_count} 个）"
             )
-            return finish("stop_error", error_exit_code)
-        print(
-            f"守候结束：stop_no_tasks（一个守候阶段内未见任务，"
-            f"本场共执行 {tasks_done_total - session_start_count} 个）"
-        )
-        return finish("stop_no_tasks", 0)
+            return finish("stop_no_tasks", 0)
+    finally:
+        _terminate_proc(sidecar_proc)
+        _terminate_proc(panel_proc)
 
 
 def main(argv=None) -> int:

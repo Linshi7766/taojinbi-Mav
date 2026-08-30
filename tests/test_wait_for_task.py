@@ -296,6 +296,15 @@ class SidecarLifecycleTests(unittest.TestCase):
                 def terminate(self):
                     terminated["count"] += 1
 
+                def kill(self):
+                    terminated["count"] += 1
+
+                def wait(self, timeout=None):
+                    return 0
+
+                def poll(self):
+                    return None  # 存活，逼出完整清理序列
+
             def runner():
                 # 每轮写入空结果日志 → 触发保守停（exit 3）
                 events = [
@@ -669,6 +678,77 @@ class StopFileTests(unittest.TestCase):
 
             self._run(logs, runner)
             self.assertGreater(calls["runner"], 0)
+
+
+class SubprocessCleanupTests(unittest.TestCase):
+    """守候收场必须完整清理子进程：terminate → wait（异常路径也要）。"""
+
+    def _args(self, **overrides):
+        import argparse
+
+        base = dict(
+            serial="TEST", task="any", max_tasks=0, daily_cap=0,
+            max_wait_cycles=1, min_gap_s=10, max_gap_s=20,
+            done_rest_min_s=300, done_rest_max_s=900,
+            grind_rest_min_s=60, grind_rest_max_s=180,
+            session_deadline_min=60, no_panel=True,
+            no_ocr_sidecar=False,
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def _recording_proc(self, calls):
+        class _Rec:
+            def terminate(self):
+                calls.append("terminate")
+
+            def kill(self):
+                calls.append("kill")
+
+            def wait(self, timeout=None):
+                calls.append(("wait", timeout))
+
+            def poll(self):
+                return None  # 始终"存活"，逼出 kill 分支
+
+        return _Rec()
+
+    def test_stop_file_path_terminates_and_waits_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            wait_for_task.LOGS_DIR = logs
+            (logs / "STOP").write_text("", encoding="utf-8")
+            calls = []
+            proc = self._recording_proc(calls)
+            wait_for_task.run_supervisor(
+                self._args(), random.Random(7),
+                runner=lambda: 0, sleeper=lambda s: None,
+                session_logger=wait_for_task.SessionEventLogger(logs),
+                sidecar_spawner=lambda: (proc, ("127.0.0.1", 54321)),
+            )
+        self.assertIn("terminate", calls)
+        self.assertTrue(any(c[0] == "wait" for c in calls))
+
+    def test_exception_path_still_cleans_sidecar(self):
+        # runner 抛异常：finally 必须清理 sidecar（否则残留进程）
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            wait_for_task.LOGS_DIR = logs
+            calls = []
+            proc = self._recording_proc(calls)
+
+            def boom():
+                raise RuntimeError("boom")
+
+            with self.assertRaises(RuntimeError):
+                wait_for_task.run_supervisor(
+                    self._args(), random.Random(7),
+                    runner=boom, sleeper=lambda s: None,
+                    session_logger=wait_for_task.SessionEventLogger(logs),
+                    sidecar_spawner=lambda: (proc, ("127.0.0.1", 54321)),
+                )
+        self.assertIn("terminate", calls)
+        self.assertTrue(any(c[0] == "wait" for c in calls))
 
 
 class SourceCheckoutBootstrapTests(unittest.TestCase):
