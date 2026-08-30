@@ -1,17 +1,21 @@
-# taojinbi-Mav 公开导出清单（供发布前审查）
+# taojinbi-Mav 公开导出清单（公开仓库已上线，本清单与实际跟踪文件一致）
 
 > 2026-08-28 更名：仓库名 `coin11-tb` → `taojinbi-Mav`，Python 包 `coin11_tb` → `taojinbi_mav`；本清单与导出内容已同步。
 
 生成时间：2026-08-28 19:35
 验证：2026-08-28 21:40 复验，导出目录离线测试 309/309 通过（含 auto-exit 修复）；CLI --help 正常；敏感扫描零命中。
 
-## 包含文件（48 个）
+## 包含文件（54 个）
 
 ```text
 ./.github/workflows/offline-tests.yml
 ./.gitignore
 ./CHANGELOG.md
 ./CONTRIBUTING.md
+./LICENSE
+./PUBLISH_MANIFEST.md
+./README.md
+./SECURITY.md
 ./docs/superpowers/specs/2026-07-30-taojinbi-immersive-browse-design.md
 ./docs/superpowers/specs/2026-07-30-taojinbi-ocr-immersive-design.md
 ./docs/superpowers/specs/2026-07-30-taojinbi-task-recovery-design.md
@@ -23,20 +27,17 @@
 ./docs/superpowers/specs/2026-08-28-readme-validation-status-design.md
 ./docs/superpowers/specs/2026-08-28-taojinbi-reopen-popup-retry-design.md
 ./docs/superpowers/specs/2026-08-28-taojinbi-startup-popup-recovery-design.md
-./LICENSE
-./PUBLISH_MANIFEST.md
 ./pyproject.toml
-./README.md
 ./scripts/run_taojinbi.py
 ./scripts/wait_for_task.py
 ./scripts/wait_panel.py
-./SECURITY.md
 ./src/taojinbi_mav/__init__.py
 ./src/taojinbi_mav/ocr_ui.py
 ./src/taojinbi_mav/runtime/__init__.py
 ./src/taojinbi_mav/runtime/config.py
 ./src/taojinbi_mav/runtime/deadline.py
 ./src/taojinbi_mav/runtime/logging.py
+./src/taojinbi_mav/runtime/ocr_service.py
 ./src/taojinbi_mav/runtime/outcome.py
 ./src/taojinbi_mav/runtime/watch.py
 ./src/taojinbi_mav/task_core.py
@@ -47,10 +48,8 @@
 ./src/taojinbi_mav/tasks/registry.py
 ./src/taojinbi_mav/tasks/search.py
 ./tests/__init__.py
-./tests/test_readme_runtime_contract.py
-./tests/test_wait_for_task.py
-./tests/test_wait_panel.py
 ./tests/test_ocr_service.py
+./tests/test_readme_runtime_contract.py
 ./tests/test_taojinbi_ocr_runtime.py
 ./tests/test_taojinbi_ocr_ui.py
 ./tests/test_taojinbi_runtime_config.py
@@ -61,6 +60,8 @@
 ./tests/test_taojinbi_task_core.py
 ./tests/test_taojinbi_task_registry.py
 ./tests/test_taojinbi_task_strategies.py
+./tests/test_wait_for_task.py
+./tests/test_wait_panel.py
 ```
 
 ## 排除项（保留在私有仓库）
@@ -73,4 +74,4 @@
 - 旧版测试：test_launcher_safety / test_multi_task_launcher / test_taojinbi_task_ui / test_utils_lazy_ocr / test_utils_task_loop_integration
 - docs/superpowers/plans/（内部计划，含设备信息）
 - 进度跟踪/、.workbuddy/、.venv/、.Python/、.cache/、.worktrees/、.superpowers/、logs/、__pycache__/
-- git 历史（导出将用全新初始提交，历史中旧设备地址不会进入公开仓库）
+- git 历史（公开仓库使用全新历史，历史中旧设备地址不会进入公开仓库）
