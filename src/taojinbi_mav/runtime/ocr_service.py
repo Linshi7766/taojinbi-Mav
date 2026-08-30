@@ -172,10 +172,15 @@ class SidecarReader:
             conn.sendall(b"R")
             _send_frame(conn, bytes(image))
             payload = _recv_frame(conn)
-        except (OSError, SidecarError) as error:
+        except (OSError, ValueError, SidecarError) as error:
+            # ValueError 覆盖截断/坏帧的 JSONDecodeError：统一走重连路径
             self.close()
             raise SidecarError(f"sidecar通信失败: {error}") from error
-        data = json.loads(payload.decode("utf-8"))
+        try:
+            data = json.loads(payload.decode("utf-8"))
+        except ValueError as error:
+            self.close()
+            raise SidecarError(f"sidecar响应解析失败: {error}") from error
         if isinstance(data, dict) and "error" in data:
             detail = data.get("traceback") or data["error"]
             raise SidecarError(f"sidecar推理失败: {detail}")
