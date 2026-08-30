@@ -183,3 +183,7 @@ docs/superpowers/plans/
 
 # Local work buddy memory
 .workbuddy/
+
+# Local failure-evidence tooling (diagnostic screenshots)
+_fail_watch.py
+_fail_evidence/
