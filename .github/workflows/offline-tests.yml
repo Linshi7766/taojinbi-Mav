@@ -50,6 +50,7 @@ jobs:
             tests
 
       - name: Run offline test suite
+        shell: bash
         env:
           PYTHONPATH: src
         run: |
