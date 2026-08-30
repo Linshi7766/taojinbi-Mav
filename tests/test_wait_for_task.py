@@ -603,11 +603,12 @@ class SidecarSpawnIsolationTests(unittest.TestCase):
 class SourceCheckoutBootstrapTests(unittest.TestCase):
     def test_help_works_without_editable_install_or_pythonpath(self):
         python = getattr(sys, "_base_executable", sys.executable)
-        # Windows 控制台默认 GBK：强制子进程用 UTF-8 输出并对无法解码的字节
-        # 容错，否则 argparse 的中文帮助会让读者线程抛异常、stdout 变成 None。
-        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        # Windows 控制台默认 GBK/cp1252：-I 会忽略 PYTHONIOENCODING 等
+        # PYTHON* 环境变量，因此用命令行选项 -X utf8 强制 UTF-8 输出，
+        # 并对无法解码的字节容错（argparse 的中文帮助否则会崩溃）。
+        env = dict(os.environ)
         result = subprocess.run(
-            [python, "-I", str(SCRIPT_PATH), "--help"],
+            [python, "-I", "-X", "utf8", str(SCRIPT_PATH), "--help"],
             cwd=str(SCRIPT_PATH.parent.parent),
             env=env,
             stdout=subprocess.PIPE,
