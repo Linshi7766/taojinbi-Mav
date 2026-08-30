@@ -974,7 +974,11 @@ def _reopen_task_popup(d, reader, screen, deadline=None):
             if not in_taobao_and_safe(d, spans):
                 return False
             if attempt == 0:
-                # 首attempt先滚回顶部：页面可能停在推荐区（假"赚更多金币"入口）。
+                # 只在确认是淘金币根页面（含"淘金币"锚点）后才滚顶：页面
+                # 可能停在推荐区（假"赚更多金币"入口）。非根页零动作失败
+                # 关闭；按钮缺失仍走下方有界重试（等入口出现）。
+                if not any(COIN_PAGE_ANCHOR in span.text for span in spans):
+                    return False
                 _scroll_coin_page_to_top(d, screen, deadline=deadline)
                 spans = ocr_screen(d, reader)
                 if not in_taobao_and_safe(d, spans):

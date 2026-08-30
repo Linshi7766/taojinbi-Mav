@@ -1235,6 +1235,27 @@ class PopupReopenRetryTests(unittest.TestCase):
             )
         return spans
 
+    def test_refuses_to_scroll_when_not_coin_root_page(self):
+        # 仅包名安全但非淘金币根页（无"淘金币"锚点）时：零滑动、零点击。
+        device = _GestureDevice()
+        spans_no_anchor = [
+            OcrSpan("赚更多金币", 0.99, (500, 800), (450, 780, 550, 820)),
+        ]
+        with patch.object(
+            runtime, "ocr_screen",
+            side_effect=[spans_no_anchor],
+        ) as read, patch.object(
+            runtime, "in_taobao_and_safe", return_value=True
+        ) as safe, patch.object(runtime, "safe_tap") as tap, patch.object(
+            runtime, "_deadline_sleep"
+        ):
+            result = runtime._reopen_task_popup(
+                device, None, (1080, 1920), deadline=None
+            )
+        self.assertFalse(result)
+        self.assertEqual(device.swipes, [])  # 未知页面零滑动
+        tap.assert_not_called()
+
     def test_scrolls_to_top_before_first_action_click(self):
         # 页面可能被系统/用户滚动到推荐区：推荐卡片上的"赚更多金币"是
         # 假入口，点进去不是任务弹窗。首attempt必须先滚回顶部再点击。

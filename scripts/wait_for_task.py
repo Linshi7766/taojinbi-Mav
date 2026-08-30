@@ -234,10 +234,22 @@ def build_child_args(args, sidecar_port: int = 0) -> list:
     return child
 
 
+# 守候会话日志允许落盘的字段白名单。
+# 隐私承诺（README/公开版日志约束）：不记录设备序列号、OCR 原文、商品名、
+# 截图路径、坐标等。任何不在白名单里的字段静默丢弃，避免未来误写隐私。
+ALLOWED_SESSION_LOG_FIELDS = frozenset({
+    "event", "ts",
+    "reason", "tasks_session", "tasks_today",
+    "cycle", "exit_code", "detected", "task_status", "status",
+    "kind", "seconds", "stage", "attempt",
+})
+
+
 class SessionEventLogger:
     """守候会话事件日志（JSONL）：供 wait_panel 整场监控面板读取。
 
     线程安全（心跳线程与主循环并发追加）；写失败静默忽略，不影响守候。
+    仅白名单字段可落盘，其他字段（含序列号/OCR 原文/坐标）静默丢弃。
     """
 
     def __init__(self, logs_dir: Path):
@@ -246,7 +258,10 @@ class SessionEventLogger:
         self._lock = threading.Lock()
 
     def emit(self, event: str, **fields) -> None:
-        record = {"event": event, "ts": time.time(), **fields}
+        record = {"event": event, "ts": time.time()}
+        for key, value in fields.items():
+            if key in ALLOWED_SESSION_LOG_FIELDS:
+                record[key] = value
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock, self.path.open("a", encoding="utf-8") as f:
@@ -398,7 +413,6 @@ def run_supervisor(
     session_start_count = tasks_done_total
     session_logger.emit(
         "session_started",
-        serial=args.serial,
         task=args.task,
         max_tasks=args.max_tasks,
         daily_cap=args.daily_cap,

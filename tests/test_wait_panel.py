@@ -28,7 +28,7 @@ class SessionEventLoggerTests(unittest.TestCase):
     def test_appends_jsonl_events_with_ts(self):
         with tempfile.TemporaryDirectory() as tmp:
             logger = wait_for_task.SessionEventLogger(Path(tmp))
-            logger.emit("session_started", serial="DEV")
+            logger.emit("session_started", tasks_session=0)
             logger.emit("task_done", tasks_session=1)
             lines = logger.path.read_text(encoding="utf-8").splitlines()
             events = [json.loads(line) for line in lines]
@@ -36,10 +36,32 @@ class SessionEventLoggerTests(unittest.TestCase):
                 [e["event"] for e in events],
                 ["session_started", "task_done"],
             )
-            self.assertEqual(events[0]["serial"], "DEV")
             self.assertEqual(events[1]["tasks_session"], 1)
             for e in events:
                 self.assertIsInstance(e["ts"], float)
+
+    def test_never_records_device_serial(self):
+        # README 隐私承诺：日志不记录设备序列号。序列号必须被白名单拒绝。
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = wait_for_task.SessionEventLogger(Path(tmp))
+            logger.emit("session_started", serial="FFKGKX")
+            lines = logger.path.read_text(encoding="utf-8").splitlines()
+            event = json.loads(lines[0])
+            self.assertNotIn("serial", event)
+
+    def test_unknown_private_fields_are_dropped(self):
+        # OCR 原文、商品名、坐标等隐私字段不得进入会话日志。
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = wait_for_task.SessionEventLogger(Path(tmp))
+            logger.emit(
+                "task_finished", status="likely_completed",
+                ocr_text="搜一搜你心仪的宝贝", box=(1, 2, 3, 4),
+            )
+            lines = logger.path.read_text(encoding="utf-8").splitlines()
+            event = json.loads(lines[0])
+            self.assertEqual(event.get("status"), "likely_completed")
+            self.assertNotIn("ocr_text", event)
+            self.assertNotIn("box", event)
 
     def test_emit_swallows_os_errors(self):
         logger = wait_for_task.SessionEventLogger(
