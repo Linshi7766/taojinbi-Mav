@@ -335,6 +335,7 @@ class SidecarLifecycleTests(unittest.TestCase):
                 code = wait_for_task.run_supervisor(
                     args, random.Random(3),
                     runner=runner, sleeper=lambda s: None,
+                sidecar_spawner=wait_for_task._spawn_ocr_sidecar,
                 )
             self.assertEqual(code, 0)  # 无候选 → 空阶段自然收场
             self.assertEqual(len(spawn_calls), 1)   # 会话启动即拉起
@@ -391,6 +392,7 @@ class RunSupervisorTests(unittest.TestCase):
             code = wait_for_task.run_supervisor(
                 self._args(max_wait_cycles=2), random.Random(7),
                 runner=runner, sleeper=lambda s: calls["sleeps"].append(s),
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 0)
             self.assertEqual(calls["runner"], 2)
@@ -417,6 +419,7 @@ class RunSupervisorTests(unittest.TestCase):
             code = wait_for_task.run_supervisor(
                 self._args(max_wait_cycles=1), random.Random(7),
                 runner=runner, sleeper=lambda s: calls["sleeps"].append(s),
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 0)
             self.assertEqual(calls["runner"], 3)
@@ -440,6 +443,7 @@ class RunSupervisorTests(unittest.TestCase):
                 self._args(max_tasks=2, max_wait_cycles=1),
                 random.Random(7),
                 runner=runner, sleeper=lambda s: calls["sleeps"].append(s),
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 0)
             self.assertEqual(calls["runner"], 2)
@@ -451,6 +455,7 @@ class RunSupervisorTests(unittest.TestCase):
             code = wait_for_task.run_supervisor(
                 self._args(), random.Random(7),
                 runner=lambda: 0, sleeper=lambda s: None,
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 3)  # 退出码 0 但无法确认该轮结果
 
@@ -468,6 +473,7 @@ class RunSupervisorTests(unittest.TestCase):
             code = wait_for_task.run_supervisor(
                 self._args(), random.Random(7),
                 runner=runner, sleeper=lambda s: None,
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 3)
             self.assertEqual(calls["runner"], 1)  # 异常即停，不重试
@@ -487,6 +493,7 @@ class RunSupervisorTests(unittest.TestCase):
                 self._args(daily_cap=2), random.Random(7),
                 runner=runner, sleeper=lambda s: None,
                 state_path=state,
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 0)
             self.assertEqual(calls["runner"], 0)  # 预算已满，一轮都不跑
@@ -508,6 +515,7 @@ class RunSupervisorTests(unittest.TestCase):
                 random.Random(7),
                 runner=runner, sleeper=lambda s: None,
                 state_path=state,
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 0)
             self.assertEqual(calls["runner"], 2)
@@ -533,9 +541,63 @@ class RunSupervisorTests(unittest.TestCase):
             code = wait_for_task.run_supervisor(
                 self._args(session_deadline_min=60), random.Random(7),
                 clock=clock, runner=runner, sleeper=lambda s: None,
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 0)
             self.assertEqual(calls["runner"], 0)  # 已超时，一轮都不跑
+
+
+class SidecarSpawnIsolationTests(unittest.TestCase):
+    """守候不得在测试里真实拉起 sidecar 子进程。
+
+    真实子进程会留下孤儿进程（Windows CI 上会污染 job 收尾），因此
+    run_supervisor 必须允许注入 sidecar spawner，测试一律使用注入。
+    """
+
+    def test_supervisor_uses_injected_sidecar_spawner(self):
+        calls = []
+
+        def fake_spawn():
+            calls.append(1)
+            return None, ("127.0.0.1", 54321)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wait_for_task.LOGS_DIR = Path(tmp)
+            args = argparse.Namespace(
+                serial="TEST", task="any", max_tasks=0, daily_cap=0,
+                max_wait_cycles=1, min_gap_s=10, max_gap_s=20,
+                done_rest_min_s=300, done_rest_max_s=900,
+                grind_rest_min_s=60, grind_rest_max_s=180,
+                session_deadline_min=60, no_panel=True,
+            )
+            wait_for_task.run_supervisor(
+                args, random.Random(7),
+                runner=lambda: 0, sleeper=lambda s: None,
+                session_logger=wait_for_task.SessionEventLogger(Path(tmp)),
+                sidecar_spawner=fake_spawn,
+            )
+        self.assertEqual(calls, [1])
+
+    def test_supervisor_does_not_spawn_when_disabled(self):
+        def fail_spawn():  # pragma: no cover - 不应被调用
+            raise AssertionError("sidecar must not spawn when disabled")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wait_for_task.LOGS_DIR = Path(tmp)
+            args = argparse.Namespace(
+                serial="TEST", task="any", max_tasks=0, daily_cap=0,
+                max_wait_cycles=1, min_gap_s=10, max_gap_s=20,
+                done_rest_min_s=300, done_rest_max_s=900,
+                grind_rest_min_s=60, grind_rest_max_s=180,
+                session_deadline_min=60, no_panel=True,
+                no_ocr_sidecar=True,
+            )
+            wait_for_task.run_supervisor(
+                args, random.Random(7),
+                runner=lambda: 0, sleeper=lambda s: None,
+                session_logger=wait_for_task.SessionEventLogger(Path(tmp)),
+                sidecar_spawner=fail_spawn,
+            )
 
 
 class SourceCheckoutBootstrapTests(unittest.TestCase):

@@ -369,8 +369,12 @@ def run_supervisor(
     runner=None,
     state_path=None,
     session_logger=None,
+    sidecar_spawner=None,
 ) -> int:
     """守候主循环：外层任务循环 × 内层守候阶段；异常即停，任务池空收场。
+
+    ``sidecar_spawner`` 用于注入 sidecar 启动动作（测试必须注入，避免
+    真实子进程留下孤儿进程）；为 None 时使用默认 ``_spawn_ocr_sidecar``。
 
     全程向 session_logger 发整场事件（session_started / cycle_started /
     cycle_finished / task_done / rest_started / heartbeat /
@@ -381,7 +385,8 @@ def run_supervisor(
     sidecar_proc = None
     sidecar_port = 0
     if not getattr(args, "no_ocr_sidecar", False):
-        sidecar_proc, sidecar_addr = _spawn_ocr_sidecar()
+        spawn_sidecar = sidecar_spawner or _spawn_ocr_sidecar
+        sidecar_proc, sidecar_addr = spawn_sidecar()
         if sidecar_addr:
             sidecar_port = sidecar_addr[1]
     session_started_ts = clock()

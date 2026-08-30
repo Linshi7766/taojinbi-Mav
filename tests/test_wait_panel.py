@@ -211,6 +211,7 @@ class SupervisorSessionEventsTests(unittest.TestCase):
                 self._args(), random.Random(7),
                 runner=runner, sleeper=lambda s: None,
                 session_logger=logger,
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 0)
             events = [
@@ -245,6 +246,7 @@ class SupervisorSessionEventsTests(unittest.TestCase):
                 self._args(), random.Random(7),
                 runner=lambda: 3, sleeper=lambda s: None,
                 session_logger=logger,
+            sidecar_spawner=lambda: (None, None),
             )
             self.assertEqual(code, 3)
             events = [
@@ -276,6 +278,7 @@ class PanelSpawnGuardTests(unittest.TestCase):
                     random.Random(7),
                     runner=lambda: 0,
                     sleeper=lambda s: None,
+                sidecar_spawner=lambda: (None, None),
                 )
             self.assertEqual(code, 3)  # 退出码 0 但日志不可确认 → 保守停
             spawn.assert_called_once()
@@ -302,6 +305,7 @@ class PanelSpawnGuardTests(unittest.TestCase):
                     wait_for_task.random.Random(7),
                     runner=lambda: 0,
                     sleeper=lambda s: None,
+                sidecar_spawner=lambda: (None, None),
                 )
             self.assertEqual(code, 3)
             spawn.assert_not_called()
