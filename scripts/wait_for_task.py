@@ -36,11 +36,13 @@ import threading
 import time
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+_SRC = REPO_ROOT / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
 from taojinbi_mav.runtime.ocr_service import wait_until_ready
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT / "src") not in __import__("sys").path:
-    __import__("sys").path.insert(0, str(REPO_ROOT / "src"))
 CLI_PATH = REPO_ROOT / "scripts" / "run_taojinbi.py"
 LOGS_DIR = REPO_ROOT / "logs"
 STATE_PATH = LOGS_DIR / "wait_state.json"

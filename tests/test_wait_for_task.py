@@ -3,7 +3,10 @@
 import argparse
 import importlib.util
 import json
+import os
 import random
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -533,6 +536,28 @@ class RunSupervisorTests(unittest.TestCase):
             )
             self.assertEqual(code, 0)
             self.assertEqual(calls["runner"], 0)  # 已超时，一轮都不跑
+
+
+class SourceCheckoutBootstrapTests(unittest.TestCase):
+    def test_help_works_without_editable_install_or_pythonpath(self):
+        python = getattr(sys, "_base_executable", sys.executable)
+        # Windows 控制台默认 GBK：强制子进程用 UTF-8 输出并对无法解码的字节
+        # 容错，否则 argparse 的中文帮助会让读者线程抛异常、stdout 变成 None。
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        result = subprocess.run(
+            [python, "-I", str(SCRIPT_PATH), "--help"],
+            cwd=str(SCRIPT_PATH.parent.parent),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--serial", result.stdout)
 
 
 if __name__ == "__main__":

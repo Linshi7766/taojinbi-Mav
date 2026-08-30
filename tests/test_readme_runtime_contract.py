@@ -1,11 +1,20 @@
+import tomllib
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README_PATH = REPO_ROOT / "README.md"
+PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
+SECURITY_PATH = REPO_ROOT / "SECURITY.md"
+PUBLIC_REPOSITORY = "https://github.com/Linshi7766/taojinbi-Mav"
 
 SUPPORTED_LABELS = ("搜一搜…", "看看#…", "发现精选好物")
 REMOVED_TASKS = ("拍立淘", "酒店超抵", "去省钱卡领红包", "淘金币充话费")
+
+
+def read_pyproject() -> dict:
+    return tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
 
 
 def read_readme() -> str:
@@ -107,6 +116,60 @@ class ReadmeRuntimeContractTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, readme)
+
+    def test_readme_records_published_source_repository(self):
+        readme = read_readme()
+        for fragment in (
+            "GitHub 公开源码仓库已上线",
+            PUBLIC_REPOSITORY,
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, readme)
+        for stale in (
+            "打包与公开发布仍未完成",
+            "打包与依赖元数据、干净导出和公开发布仍未完成",
+            "czl0325/taojinbi-Mav",
+        ):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, readme)
+
+    def test_readme_uses_checkout_install_and_current_paths(self):
+        readme = read_readme()
+        for fragment in (
+            "pip install -e '.[gpu]'",
+            "src/taojinbi_mav/task_strategies.py",
+            "scripts/wait_for_task.py",
+            "正式版本标签/独立发行包尚未发布",
+            "不提供 `taojinbi-mav` 全局命令",
+            "| 模块 | 标题结构 | 当前执行策略 | 验证状态 |",
+            "非官方",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, readme)
+        self.assertNotIn("pip install -r requirements.txt", readme)
+        self.assertNotIn("taojinbi_task_strategies.py", readme)
+
+    def test_pyproject_uses_published_repository_metadata(self):
+        project = read_pyproject()["project"]
+        self.assertNotIn("公开 Beta 准备中", project["description"])
+        self.assertEqual(project["urls"]["Homepage"], PUBLIC_REPOSITORY)
+        self.assertEqual(
+            project["urls"]["Security"],
+            f"{PUBLIC_REPOSITORY}/blob/main/SECURITY.md",
+        )
+        self.assertEqual(
+            project["urls"]["Changelog"],
+            f"{PUBLIC_REPOSITORY}/blob/main/CHANGELOG.md",
+        )
+
+    def test_release_docs_distinguish_source_release_from_version_release(self):
+        changelog = CHANGELOG_PATH.read_text(encoding="utf-8")
+        security = SECURITY_PATH.read_text(encoding="utf-8")
+        self.assertIn("GitHub 公开源码仓库已上线", changelog)
+        self.assertIn("正式版本标签/发行包尚未发布", changelog)
+        self.assertNotIn("公开 Beta 准备中", changelog)
+        self.assertIn(f"{PUBLIC_REPOSITORY}/issues", security)
+        self.assertNotIn("公开仓库发布后", security)
 
 
 if __name__ == "__main__":

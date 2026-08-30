@@ -41,7 +41,7 @@
 
 ## 报告问题
 
-公开仓库发布后，请通过 GitHub Issues 报告，并附：
+请通过 [GitHub Issues](https://github.com/Linshi7766/taojinbi-Mav/issues) 报告，并附：
 
 - 复现步骤（是否处于 `--dry-run`）；
 - 脱敏后的日志片段（`logs/` 中的 JSONL 事件，不要贴原始 OCR 文本或截图）；

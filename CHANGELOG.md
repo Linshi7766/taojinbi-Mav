@@ -1,9 +1,8 @@
 # 更新日志
 
-本项目尚未发布公开版本。以下按时间倒序记录已经落地的变更，格式遵循
-[Keep a Changelog](https://keepachangelog.com/)，版本号在公开 Beta 发布时确定。
+本项目的 GitHub 公开源码仓库已上线；正式版本标签/发行包尚未发布。以下按时间倒序记录已经落地的变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/)。
 
-## [未发布] — 公开 Beta 准备中
+## [未发布] — 正式版本准备中
 
 ### 新增
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "taojinbi-mav"
 version = "0.1.0"
-description = "淘宝“赚金币抵钱”内部三项纯浏览任务的受控自动化脚本（公开 Beta 准备中）"
+description = "淘宝‘赚金币抵钱’内部三项纯浏览任务的受控自动化脚本"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
