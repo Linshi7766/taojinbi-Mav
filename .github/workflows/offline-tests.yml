@@ -61,3 +61,25 @@ jobs:
             exit 1
           fi
           echo "offline run clean: no runtime logs, no device or model access"
+
+      - name: Build sdist and wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install build
+          python -m build
+          ls -la dist/
+
+      - name: Install wheel in clean env and import
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv _artifact_venv
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PY=_artifact_venv/Scripts/python.exe
+          else
+            PY=_artifact_venv/bin/python
+          fi
+          "$PY" -m pip install --quiet dist/*.whl
+          "$PY" -c "import taojinbi_mav; import taojinbi_mav.task_core; print('artifact import ok')"
+          rm -rf _artifact_venv
