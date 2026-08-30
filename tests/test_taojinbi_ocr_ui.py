@@ -912,8 +912,9 @@ class SearchFirstTaskTests(unittest.TestCase):
         candidates = find_discovery_candidates(entry, self.SCREEN)
         texts = [c.text for c in candidates]
         # 发现栏下方的推荐词被纳入
-        self.assertIn("抖加充值", texts)
         self.assertIn("VR眼镜", texts)
+        # 充值/交易/红包类入口不得成为候选（点击不产生搜索流，可能进交易页）
+        self.assertNotIn("抖加充值", texts)
         # 区块标题本身、上方历史词与搜索框都不得入选
         self.assertNotIn("搜索发现", texts)
         self.assertNotIn("iPhone17", texts)
@@ -922,6 +923,21 @@ class SearchFirstTaskTests(unittest.TestCase):
         for c in candidates:
             self.assertGreater(c.center[1], 720)
             self.assertTrue(is_safe_tap_point(c.center, self.SCREEN))
+
+    def test_discovery_candidates_exclude_recharge_and_red_packet(self):
+        # 充值/红包/提现等交易特征文本即使出现在发现栏下方也绝不点击
+        entry = parse_ocr_spans(self.ENTRY_SAMPLE)
+        for extra in ("话费充值", "领红包", "余额提现"):
+            spans = entry + [
+                OcrSpan(
+                    extra, 0.99, (400, 900),
+                    (350, 880, 450, 920),
+                )
+            ]
+            texts = [
+                c.text for c in find_discovery_candidates(spans, self.SCREEN)
+            ]
+            self.assertNotIn(extra, texts)
 
     def test_discovery_candidates_exclude_bottom_nav_item(self):
         entry = parse_ocr_spans(self.ENTRY_SAMPLE)
@@ -941,8 +957,9 @@ class SearchFirstTaskTests(unittest.TestCase):
                       "搜索近一周上涨190%+"):
             self.assertNotIn(noise, texts)
         # 真实推荐词仍保留
-        self.assertIn("抖加充值", texts)
         self.assertIn("VR眼镜", texts)
+        # 充值/交易类（如"抖加充值"）现在按噪声排除
+        self.assertNotIn("抖加充值", texts)
 
     # 真机详情页底栏：加购/立即购买（只用于识别，绝不点）
     DETAIL_SAMPLE = [
