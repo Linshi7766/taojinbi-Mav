@@ -1639,8 +1639,11 @@ class StartupPopupRecoveryTests(unittest.TestCase):
             device, None, (1080, 1920), logger=logger
         )
         context.emit_diagnostic({"reason": "probe", "span_count": 3})
-        self.assertIn(("page_diagnostic", {"reason": "probe", "span_count": 3}),
-                      logger.events)
+        self.assertIn(
+            ("page_diagnostic",
+             {"reason": "probe", "diagnostic": {"span_count": 3}}),
+            logger.events,
+        )
 
     def test_build_strategy_context_without_logger_has_no_diagnostic(self):
         device = _WorkingDevice()
@@ -2907,7 +2910,7 @@ class SettleDiagnosticTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         payload = events[1 - 1][1]
         self.assertEqual(payload["reason"], "settle_back_failed")
-        self.assertTrue(payload["has_coin_title"])
+        self.assertTrue(payload["diagnostic"]["has_coin_title"])
         self.assertNotIn("淘金币", json.dumps(payload, ensure_ascii=False))
 
     def test_swallows_diagnostic_errors(self):

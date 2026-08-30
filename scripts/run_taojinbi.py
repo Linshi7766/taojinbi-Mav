@@ -247,7 +247,15 @@ def build_strategy_context(d, reader, screen, deadline=None, logger=None):
 
     def emit_diagnostic(payload):
         if logger is not None:
-            logger.emit("page_diagnostic", **payload)
+            reason = payload.get("reason", "diagnostic")
+            diagnostic = {
+                key: value
+                for key, value in payload.items()
+                if key != "reason"
+            }
+            logger.emit(
+                "page_diagnostic", reason=reason, diagnostic=diagnostic
+            )
 
     return StrategyContext(
         device=d,
@@ -1021,7 +1029,9 @@ def _emit_recovery_diagnostic(d, reader, logger, reason):
     try:
         spans = ocr_screen(d, reader)
         logger.emit(
-            "page_diagnostic", reason=reason, **page_fingerprint(spans)
+            "page_diagnostic",
+            reason=reason,
+            diagnostic=page_fingerprint(spans),
         )
     except Exception:
         pass

@@ -41,6 +41,52 @@ class RuntimeLoggingTests(unittest.TestCase):
             self.assertNotIn("斯维诗鱼油", raw)
             self.assertEqual(output, ["dry-run：看看#… supported"])
 
+    def test_accepts_page_diagnostic_with_whitelisted_fields(self):
+        output = []
+        with tempfile.TemporaryDirectory() as folder:
+            logger = create_runtime_logger(
+                folder,
+                RunMode.EXECUTE,
+                now=lambda: datetime(2026, 8, 25, tzinfo=timezone.utc),
+                run_id_factory=lambda: "abcd1234",
+                console=output.append,
+            )
+            logger.emit(
+                "page_diagnostic",
+                reason="anchor_missing",
+                diagnostic={
+                    "span_count": 12,
+                    "has_coin_title": True,
+                    "has_popup_title": False,
+                },
+            )
+            path = logger.path
+            logger.close()
+            event = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertEqual(event["event"], "page_diagnostic")
+        self.assertEqual(event["reason"], "anchor_missing")
+        self.assertEqual(event["diagnostic"]["span_count"], 12)
+        self.assertTrue(event["diagnostic"]["has_coin_title"])
+
+    def test_rejects_unknown_diagnostic_keys(self):
+        # 诊断字段必须来自白名单：OCR 原文/商品名等隐私键一律拒绝
+        with tempfile.TemporaryDirectory() as folder:
+            logger = create_runtime_logger(
+                folder,
+                RunMode.EXECUTE,
+                run_id_factory=lambda: "abcd1234",
+                console=lambda _text: None,
+            )
+            try:
+                with self.assertRaises(ValueError):
+                    logger.emit(
+                        "page_diagnostic",
+                        reason="anchor_missing",
+                        diagnostic={"ocr_text": "搜一搜你心仪的宝贝"},
+                    )
+            finally:
+                logger.close()
+
     def test_rejects_unknown_event_task_key_and_free_text_reason(self):
         with tempfile.TemporaryDirectory() as folder:
             logger = create_runtime_logger(

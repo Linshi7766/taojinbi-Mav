@@ -17,6 +17,13 @@ EVENTS = frozenset({
     "recovery_started",
     "recovery_finished",
     "run_finished",
+    "page_diagnostic",
+})
+# page_diagnostic 允许携带的脱敏信号键（布尔/计数，绝无 OCR 原文/坐标）
+DIAGNOSTIC_KEYS = frozenset({
+    "span_count",
+    "is_result_feed", "is_entry_page", "is_flow_page",
+    "has_badge", "has_coin_title", "has_popup_title", "has_search_button",
 })
 TASK_LABELS = {
     "search": "搜一搜…",
@@ -44,6 +51,7 @@ class RuntimeEventLogger:
         status="",
         reason="",
         counts=None,
+        diagnostic=None,
     ):
         if event not in EVENTS:
             raise ValueError("unknown runtime event")
@@ -55,6 +63,20 @@ class RuntimeEventLogger:
         safe_counts = counts if counts is not None else RunCounts()
         if not isinstance(safe_counts, RunCounts):
             raise TypeError("counts must be RunCounts")
+        safe_diagnostic = None
+        if diagnostic is not None:
+            if not isinstance(diagnostic, dict):
+                raise TypeError("diagnostic must be a dict")
+            for key, value in diagnostic.items():
+                if key not in DIAGNOSTIC_KEYS:
+                    raise ValueError(f"unknown diagnostic key: {key}")
+                if isinstance(value, bool):
+                    continue
+                if not isinstance(value, int) or not (
+                    0 <= value <= 1_000_000
+                ):
+                    raise ValueError("diagnostic values must be bool or small int")
+            safe_diagnostic = dict(diagnostic)
         payload = {
             "schema_version": 1,
             "timestamp": self._now().astimezone(timezone.utc).isoformat(),
@@ -68,6 +90,8 @@ class RuntimeEventLogger:
             "reason": reason,
             "counts": asdict(safe_counts),
         }
+        if safe_diagnostic is not None:
+            payload["diagnostic"] = safe_diagnostic
         self._stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
         self._stream.flush()
         if event == "dry_run_row_decided":
