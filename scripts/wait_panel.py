@@ -175,6 +175,7 @@ def _render(state: dict) -> str:
 
 def run_panel(
     logs_dir=LOGS_DIR,
+    log_path=None,
     out=print,
     sleep=time.sleep,
     clock=time.time,
@@ -183,11 +184,15 @@ def run_panel(
     no_file_timeout=NO_FILE_TIMEOUT,
     finished_grace=FINISHED_GRACE,
 ) -> int:
-    """面板主循环；返回退出码。纯读取，任何异常不打断守候主进程。"""
+    """面板主循环；返回退出码。纯读取，任何异常不打断守候主进程。
+
+    显式 ``log_path`` 优先（本轮精确事件文件）；未提供时回退
+    ``pick_newest_session_file``（多会话并行时可能读到上一轮）。
+    """
     started = clock()
     while True:
         now = clock()
-        path = pick_newest_session_file(logs_dir)
+        path = log_path or pick_newest_session_file(logs_dir)
         if path is None:
             if now - started >= no_file_timeout:
                 out("60 秒内未出现守候会话日志，面板退出"
@@ -229,9 +234,17 @@ def main(argv=None) -> int:
         default=str(LOGS_DIR),
         help="会话日志目录（默认项目 logs/）",
     )
+    parser.add_argument(
+        "--log",
+        default=None,
+        help="显式监听的本轮会话日志文件（优先于 logs-dir 的最新文件猜测）",
+    )
     args = parser.parse_args(argv)
     try:
-        return run_panel(logs_dir=Path(args.logs_dir))
+        return run_panel(
+            logs_dir=Path(args.logs_dir),
+            log_path=Path(args.log) if args.log else None,
+        )
     except KeyboardInterrupt:
         return 130
 

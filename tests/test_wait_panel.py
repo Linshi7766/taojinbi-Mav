@@ -175,6 +175,45 @@ class PickNewestSessionFileTests(unittest.TestCase):
                 wait_panel.pick_newest_session_file(logs), new
             )
 
+    def test_main_accepts_explicit_log_path(self):
+        with mock.patch.object(wait_panel, "run_panel") as run:
+            wait_panel.main(["--log", "X:/tmp/wait-session-x.jsonl"])
+        run.assert_called_once()
+        self.assertEqual(
+            run.call_args.kwargs["log_path"],
+            Path("X:/tmp/wait-session-x.jsonl"),
+        )
+
+    def test_run_panel_prefers_explicit_path_over_newest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            explicit = Path(tmp) / "wait-session-20260830T000000Z.jsonl"
+            explicit.write_text("", encoding="utf-8")
+            state = {
+                "phase": "waiting_log", "finished": False,
+                "tasks_session": 0, "tasks_today": 0, "last_events": [],
+                "last_ts": None, "started_ts": None,
+            }
+            with mock.patch.object(
+                wait_panel, "pick_newest_session_file"
+            ) as pick, mock.patch.object(
+                wait_panel, "read_events", return_value=[]
+            ), mock.patch.object(
+                wait_panel, "derive_session_state", return_value=state
+            ), mock.patch.object(
+                wait_panel, "_render", return_value=""
+            ):
+                def stop(_s):
+                    raise KeyboardInterrupt()
+
+                with self.assertRaises(KeyboardInterrupt):
+                    wait_panel.run_panel(
+                        log_path=explicit,
+                        out=lambda _s: None,
+                        sleep=stop,
+                        clock=lambda: 0.0,
+                    )
+            pick.assert_not_called()
+
     def test_returns_none_when_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(

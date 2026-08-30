@@ -287,19 +287,26 @@ class SessionEventLogger:
             pass
 
 
-def _spawn_wait_panel():
-    """Windows 下以独立控制台窗口启动整场监控面板；非 Windows 返回 None。"""
+def _spawn_wait_panel(log_path=None):
+    """Windows 下以独立控制台窗口启动整场监控面板；非 Windows 返回 None。
+
+    ``log_path`` 是本轮精确会话日志文件：面板不再猜测"最新文件"，
+    避免多会话/残留日志时读错目标。
+    """
     if os.name != "nt":
         return None
     import subprocess
 
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve().parent / "wait_panel.py"),
+        "--auto-exit",
+    ]
+    if log_path is not None:
+        cmd += ["--log", str(log_path)]
     try:
         return subprocess.Popen(
-            [
-                sys.executable,
-                str(Path(__file__).resolve().parent / "wait_panel.py"),
-                "--auto-exit",
-            ],
+            cmd,
             creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
         )
     except OSError as error:
@@ -438,7 +445,7 @@ def run_supervisor(
             session_deadline_min=args.session_deadline_min,
         )
         if not getattr(args, "no_panel", False):
-            panel_proc = _spawn_wait_panel()
+            panel_proc = _spawn_wait_panel(session_logger.path)
 
         stop_heartbeat = threading.Event()
         if runner is None:
