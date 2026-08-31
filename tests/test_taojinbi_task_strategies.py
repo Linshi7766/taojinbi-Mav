@@ -405,6 +405,79 @@ class SearchBrowseStrategyTests(unittest.TestCase):
             len(device.swipes), strategies.SEARCH_BADGE_MAX_SCROLLS
         )
 
+    def test_wait_for_search_result_explores_after_static_polls_fail(self):
+        """静等 4 帧未命中（页面加载中）→ 滑动探索第 1 次命中 → 成功。"""
+        device = GestureDevice()
+        loading_page = [
+            OcrSpan("搜索中", 0.9, (300, 600), (100, 580, 500, 620))
+        ]
+        result_feed = [
+            OcrSpan("金币可领取", 0.99, (300, 600), (100, 580, 500, 620))
+        ]
+        # 4 帧静等全是加载页 → 探索第 1 次滑后出现结果页锚点
+        screens = iter([loading_page] * 4 + [result_feed] + [result_feed])
+        context = strategies.StrategyContext(
+            device=device,
+            reader=None,
+            screen=(1080, 1920),
+            read_screen=lambda: next(screens),
+            screen_is_safe=lambda spans: bool(spans),
+            package_is_safe=lambda: True,
+            safe_tap=lambda _center: True,
+            back=lambda: None,
+        )
+        with patch.object(strategies.time, "sleep"):
+            result = strategies._wait_for_search_result(context)
+        self.assertEqual(result, strategies.StrategyResult(True))
+        self.assertEqual(len(device.swipes), 1)  # 探索只滑 1 次就命中
+
+    def test_wait_for_search_result_explore_fails_returns_unavailable(self):
+        """静等 + 探索全部未命中 → search_result_unavailable（不谎报）。"""
+        device = GestureDevice()
+        loading_page = [
+            OcrSpan("搜索中", 0.9, (300, 600), (100, 580, 500, 620))
+        ]
+        # 4 帧静等 + 2 帧探索（滑 2 次）全部未出现结果页锚点
+        screens = iter([loading_page] * 6)
+        context = strategies.StrategyContext(
+            device=device,
+            reader=None,
+            screen=(1080, 1920),
+            read_screen=lambda: next(screens),
+            screen_is_safe=lambda spans: bool(spans),
+            package_is_safe=lambda: True,
+            safe_tap=lambda _center: True,
+            back=lambda: None,
+        )
+        with patch.object(strategies.time, "sleep"):
+            result = strategies._wait_for_search_result(context)
+        self.assertEqual(
+            result, strategies.StrategyResult(False, "search_result_unavailable")
+        )
+        self.assertEqual(len(device.swipes), 2)
+
+    def test_wait_for_search_result_explore_swipes_upward_only(self):
+        """滑动探索方向固定向上（结果页内容向下滚动，锚点从上方露出）。"""
+        device = GestureDevice()
+        loading_page = [
+            OcrSpan("搜索中", 0.9, (300, 600), (100, 580, 500, 620))
+        ]
+        screens = iter([loading_page] * 6)
+        context = strategies.StrategyContext(
+            device=device,
+            reader=None,
+            screen=(1080, 1920),
+            read_screen=lambda: next(screens),
+            screen_is_safe=lambda spans: bool(spans),
+            package_is_safe=lambda: True,
+            safe_tap=lambda _center: True,
+            back=lambda: None,
+        )
+        with patch.object(strategies.time, "sleep"):
+            strategies._wait_for_search_result(context)
+        for swipe in device.swipes:
+            self.assertGreater(swipe[1], swipe[3])  # y 起 > y 止 = 上滑
+
     def test_entry_page_with_badge_taps_keyword_not_scroll(self):
         """入口页带徽标：必须点关键词进结果页，绝不在入口页空滑。"""
         device = GestureDevice()
