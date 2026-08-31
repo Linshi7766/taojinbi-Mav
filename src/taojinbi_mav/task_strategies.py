@@ -21,6 +21,7 @@ DWELL_SECONDS = 10
 SWIPE_SETTLE = 2
 MAX_SEARCH_ATTEMPTS = 4
 SEARCH_FEED_POLLS = 4
+SEARCH_FEED_EXPLORE_SWIPES = 2   # 静等未命中后轻滑探索次数（"可领"锚点可能在首屏外）
 SEARCH_KEYWORDS_PER_ROUND = 1  # 每轮浏览的搜索发现关键词数量（真机：每次点 1 个关键词浏览 14 秒）
 SEARCH_SCROLLS = 15            # 徽标不可读时的保底滑动次数（约 30 秒；2026-08-29 实测要求 25 秒）
 SEARCH_SCROLL_INTERVAL = 2     # 每次滑动间隔秒数（用户手动节奏：约 2 秒/滑）
@@ -167,7 +168,29 @@ def _execute_feed_browse(context, browse_count):
 
 
 def _wait_for_search_result(context):
+    """等待搜索结果页出现（搜索后浏览得币页）。
+
+    阶段 A（静等）：SWIPE_SETTLE 间隔轮询 SEARCH_FEED_POLLS 次读屏，任一帧
+    命中即返回；命中判定 is_search_result_feed 要求"可领"奖励条可见且非入口页。
+
+    阶段 B（滑动探索）：静等全部未命中时，轻滑一屏再读
+    SEARCH_FEED_EXPLORE_SWIPES 次——"可领"锚点可能在首屏之外（首屏全是
+    商品图/加载未完成时 OCR 读不到文本），滑动后出现即命中。两阶段都保持
+    fail-closed：unsafe_screen 立即返回，绝不盲滑/盲点。
+    """
     for _ in range(SEARCH_FEED_POLLS):
+        context.sleep(SWIPE_SETTLE)
+        spans = context.read_screen()
+        if not context.screen_is_safe(spans):
+            return StrategyResult(False, "unsafe_screen")
+        if is_search_result_feed(spans):
+            return StrategyResult(True)
+    width, height = context.screen
+    for _ in range(SEARCH_FEED_EXPLORE_SWIPES):
+        context.swipe(
+            width // 2, int(height * 0.72),
+            width // 2, int(height * 0.28),
+        )
         context.sleep(SWIPE_SETTLE)
         spans = context.read_screen()
         if not context.screen_is_safe(spans):
