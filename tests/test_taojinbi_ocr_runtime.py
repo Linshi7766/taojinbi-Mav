@@ -2638,6 +2638,19 @@ class TaskEventLoggingTests(unittest.TestCase):
         self.assertEqual(finished[0][1]["status"], "likely_completed")
         self.assertEqual(finished[0][1]["reason"], "progress_reset")
 
+    def test_total_mismatch_after_browse_is_likely_completed(self):
+        # 浏览已发生+读到过进度：total 不匹配 = 展示滞后（计数延迟刷新），
+        # 与 task_row_unobserved 同口径归"很可能完成"，不误判 unfinished
+        result = ImmersiveRunResult(
+            completed=False, progress=1, successful_steps=1,
+            reason="progress_total_mismatch",
+            transitions=((0, 1), (1, 0)),
+        )
+        logger = self._run(result)
+        finished = [e for e in logger.events if e[0] == "task_finished"]
+        self.assertEqual(finished[0][1]["status"], "likely_completed")
+        self.assertEqual(finished[0][1]["reason"], "progress_total_mismatch")
+
     def test_finished_completed_status_for_confirmed_result(self):
         logger = self._run(
             ImmersiveRunResult(

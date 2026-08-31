@@ -1238,6 +1238,13 @@ def run_safe_browse_tasks(d, reader, max_tasks=8, run_deadline=None,
                 # 与 missing_progress+browsed 同口径归类"很可能完成"
                 likely_done.append(label)
                 task_status = "likely_completed"
+            elif (result.reason == "progress_total_mismatch" and browsed
+                  and getattr(result, "progress", 0) > 0):
+                # 浏览后读进度 total 不匹配 = 展示滞后（计数延迟刷新，真机
+                # 证实：浏览徽标计时到账但任务行计数数分钟后才更新）。
+                # 已浏览且读到过进度：与 task_row_unobserved 同口径"很可能完成"。
+                likely_done.append(label)
+                task_status = "likely_completed"
             else:
                 unfinished.append(f"{label}({result.reason})")
                 task_status = "unfinished"
