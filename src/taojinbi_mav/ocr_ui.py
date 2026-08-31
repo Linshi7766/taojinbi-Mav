@@ -299,6 +299,25 @@ def _row_spans_for_title(spans, title, band):
     ]
 
 
+def _row_evidence_text(row_spans, title):
+    """整行描述证据：标题段与动作按钮段之外的整行文本拼接。
+
+    OCR 抖动常把"浏览"与"+35"合并成"浏览(+35"单段；若按"非奖励段"过滤，
+    合并段会被整段排除，导致缺少描述证据（真机 2026-08-31 实测：好物沉浸看
+    行被读成"浏览(+35"后 missing_description_evidence）。整行提取保证"浏览"
+    二字无论落在哪个段都能作为证据——"浏览"本身是浏览任务的强类型信号，
+    纯奖励文本（"+50"）不含该词，放宽不会误授权非浏览任务。
+
+    动作按钮段（ACTION_WORDS，如"去浏览"）必须排除：按钮文本含"浏览"但
+    属于操作词，不能充当描述证据（既有安全语义，保持不变）。
+    """
+    return " ".join(
+        span.text
+        for span in row_spans
+        if span is not title and span.text not in ACTION_WORDS
+    )
+
+
 def _evaluate_browse_row(
     title,
     spans,
@@ -336,14 +355,10 @@ def _evaluate_browse_row(
     elif profile is None:
         reason = "unsupported_task"
     else:
-        description_text = " ".join(
-            span.text
-            for span in row_spans
-            if span is not title
-            and span.text not in ACTION_WORDS
-            and not _is_reward_text(span.text)
-        )
-        if not profile.accepts_row(description_text):
+        # 描述证据用整行（非标题段）提取：OCR 合并段（如"浏览(+35"）不再
+        # 因被 _is_reward_text 整段排除而丢失"浏览"证据。
+        evidence_text = _row_evidence_text(row_spans, title)
+        if not profile.accepts_row(evidence_text):
             reason = "missing_description_evidence"
         else:
             pair = _read_progress_pair(title.text)
