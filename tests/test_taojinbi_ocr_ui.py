@@ -1242,9 +1242,9 @@ class DiscoveryTwoFrameSafetyTests(unittest.TestCase):
 
     def test_revalidate_none_when_shifted_beyond_tolerance(self):
         original = self._candidate(center=(300, 700))
-        # 移动 100px > 屏宽 6%（64.8px）→ 视为页面变化，零点击
+        # 移动 200px > 屏宽 12%（129.6px）→ 视为页面变化，零点击
         shifted = OcrSpan(
-            "鱼油推荐", 0.9, (400, 700), (300, 680, 500, 720)
+            "鱼油推荐", 0.9, (500, 700), (400, 680, 600, 720)
         )
         self.assertIsNone(
             ocr_ui.revalidate_discovery_candidate(
@@ -1261,6 +1261,18 @@ class DiscoveryTwoFrameSafetyTests(unittest.TestCase):
         )
         self.assertIsNotNone(result)
         self.assertEqual(result.center, (330, 700))
+
+    def test_revalidate_tolerates_ocr_jitter(self):
+        # 第二帧标点/空格抖动：标准化后相似度>=0.8 仍匹配同一词
+        original = self._candidate(text="苹果充电线")
+        jittered = OcrSpan(
+            "苹果充电线，", 0.75, (300, 700), (200, 680, 400, 720)
+        )
+        result = ocr_ui.revalidate_discovery_candidate(
+            original, [jittered], self.SCREEN
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.center, (300, 700))
 
     def test_scaled_resolution_judges_consistently(self):
         # 等比缩放 2 倍（2160x3840）：同一布局判定一致（候选仍在第一行）
@@ -1280,3 +1292,34 @@ class DiscoveryTwoFrameSafetyTests(unittest.TestCase):
             [c.text for c in base_candidates],
             [c.text for c in scaled_candidates],
         )
+
+
+class CoinBalanceParseTests(unittest.TestCase):
+    """parse_coin_balance：淘金币首页余额解析（只读纯函数）。"""
+
+    def test_parses_real_device_sample(self):
+        spans = [
+            OcrSpan("淘金币", 0.62, (220, 138), (180, 128, 260, 148)),
+            OcrSpan("16152可抵161元", 0.99, (515, 137), (400, 127, 630, 147)),
+            OcrSpan("提醒我来领淘金币", 0.95, (272, 249), (180, 239, 360, 259)),
+        ]
+        self.assertEqual(ocr_ui.parse_coin_balance(spans), 16152)
+
+    def test_none_without_anchor(self):
+        spans = [OcrSpan("随便", 0.9, (1, 1), (0, 0, 2, 2))]
+        self.assertIsNone(ocr_ui.parse_coin_balance(spans))
+
+    def test_anchor_contains_number(self):
+        spans = [
+            OcrSpan("淘金币 12345", 0.9, (220, 138), (180, 128, 260, 148))
+        ]
+        self.assertEqual(ocr_ui.parse_coin_balance(spans), 12345)
+
+    def test_other_rows_numbers_ignored(self):
+        # 下方"每日可领120"等数字不得误读为余额
+        spans = [
+            OcrSpan("淘金币", 0.62, (220, 138), (180, 128, 260, 148)),
+            OcrSpan("16152可抵161元", 0.99, (515, 137), (400, 127, 630, 147)),
+            OcrSpan("120", 0.99, (370, 430), (350, 420, 390, 440)),
+        ]
+        self.assertEqual(ocr_ui.parse_coin_balance(spans), 16152)

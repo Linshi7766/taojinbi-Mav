@@ -7,6 +7,7 @@ bbox_points 为 4 个 [x, y] 角点。输出过滤后的文本段、定位到的
 
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from taojinbi_mav.tasks.registry import profile_for_title
 from taojinbi_mav.task_core import (
@@ -52,6 +53,8 @@ SEARCH_NOISE_MARKERS = (
     "正品保证",
     # 充值/交易/红包类：点击不产生搜索结果流，可能进入充值/交易页
     "充值", "红包", "提现", "余额",
+    # 促销/属性副文案（卡片小字，非可搜索词）
+    "原封", "正品", "官方",
 )
 # 商品详情页锦点（仅用于识别“已进详情”，绝不点击这些按钮）
 PRODUCT_DETAIL_ANCHORS = ("加入购物车", "立即购买", "领券购买")
@@ -659,9 +662,9 @@ def find_discovery_candidates(spans, screen_size):
 # 设计来自 Codex 第二轮核验（DiscoveryRegion / DiscoveryCandidate）。
 # ---------------------------------------------------------------------------
 
-_MIN_DISCOVERY_CONFIDENCE = 0.60   # 候选最低置信度（低于视为不可靠）
+_MIN_DISCOVERY_CONFIDENCE = 0.70   # 候选最低置信度（低于视为不可靠）
 _ROW_TOLERANCE_RATIO = 0.03        # "第一行"聚类容差（占屏高比例）
-_REVALIDATE_SHIFT_RATIO = 0.06     # 第二帧重定位最大位移（占屏宽比例）
+_REVALIDATE_SHIFT_RATIO = 0.12     # 第二帧重定位最大位移（占屏宽比例，抗轻微位移/动画）
 
 
 @dataclass(frozen=True)
@@ -736,19 +739,31 @@ def find_discovery_candidates(spans, screen_size):
     ]
 
 
-def revalidate_discovery_candidate(original, fresh_spans, screen_size):
-    """第二帧重定位：同一文本必须唯一且位置接近；否则 None（零点击）。
+def _normalize_ocr_text(text):
+    """OCR 文本标准化：去空白与全角/半角标点，只留中英文数字（抗两帧抖动）。"""
+    return re.sub(r"[\s\u3000，。、！？；：""''（）《》【】\-—_—·~!?,.;:()\[\]{}|/\\<>\"']+", "", text)
 
-    返回第二帧的新 DiscoveryCandidate（点击必须使用第二帧坐标，不复用
-    第一帧旧坐标）。消失、重复、移位过大、坐标不安全均返回 None。
+
+def revalidate_discovery_candidate(original, fresh_spans, screen_size):
+    """第二帧重定位：同一词必须唯一且位置接近；否则 None（零点击）。
+
+    真机 OCR 两帧存在抖动（标点/空格/个别字符），故匹配用标准化文本 +
+    相似度（>=0.8）而非严格相等；位置容差为屏宽 12%（抗轻微位移/动画）。
+    返回第二帧新坐标（不复用第一帧旧坐标）；消失、歧义、移位过大、
+    坐标不安全均返回 None。
     """
     width, _height = screen_size
     max_shift = width * _REVALIDATE_SHIFT_RATIO
-    normalized = original.text.strip()
-    matches = [s for s in fresh_spans if s.text.strip() == normalized]
-    if len(matches) != 1:
-        return None  # 消失或歧义（同名多条）
-    fresh = matches[0]
+    norm = _normalize_ocr_text(original.text)
+    if not norm:
+        return None
+    candidates = [
+        s for s in fresh_spans
+        if SequenceMatcher(None, norm, _normalize_ocr_text(s.text)).ratio() >= 0.8
+    ]
+    if len(candidates) != 1:
+        return None  # 消失或歧义（无匹配 / 多条近似）
+    fresh = candidates[0]
     if (abs(fresh.center[0] - original.center[0]) > max_shift
             or abs(fresh.center[1] - original.center[1]) > max_shift):
         return None  # 移位过大
@@ -760,6 +775,40 @@ def revalidate_discovery_candidate(original, fresh_spans, screen_size):
         bbox=fresh.bounds,
         confidence=fresh.confidence,
     )
+
+
+
+COIN_BALANCE_ANCHOR = "淘金币"
+_BALANCE_ROW_TOLERANCE = 40  # 余额数字与锚点的同行 y 容差
+
+
+def parse_coin_balance(spans):
+    """解析淘金币首页余额（只读纯函数）。
+
+    锚点 = 含"淘金币"的 span；取同行（y 容差内）最近的含数字 span 的
+    首位 4+ 位数字（余额通常 >=4 位）；锚点自身含数字也接受。
+    返回 int（金币数）或 None。
+    """
+    anchors = [s for s in spans if COIN_BALANCE_ANCHOR in s.text]
+    if not anchors:
+        return None
+    anchor = anchors[0]
+    same_row = [
+        s for s in spans
+        if abs(s.center[1] - anchor.center[1]) <= _BALANCE_ROW_TOLERANCE
+        and re.search(r"\d", s.text)
+    ]
+    for s in sorted(
+        same_row, key=lambda s: abs(s.center[0] - anchor.center[0])
+    ):
+        m = (re.search(r"(\d{4,}[\d,]*)", s.text)
+             or re.search(r"(\d[\d,]*)", s.text))
+        if m:
+            value = int(m.group(1).replace(",", ""))
+            if value > 0:
+                return value
+    m = re.search(r"(\d[\d,]*)", anchor.text)
+    return int(m.group(1).replace(",", "")) if m else None
 
 
 def screen_text_signature(spans):

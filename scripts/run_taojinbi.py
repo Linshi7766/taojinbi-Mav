@@ -983,18 +983,18 @@ def _scroll_coin_page_to_top(d, screen, deadline=None, max_swipes=3):
 
 
 def _is_coin_root_page(spans, screen_size):
-    """淘金币根页面身份合同：唯一"淘金币"锚点 + 锚点在顶部区域。
+    """淘金币根页面身份合同：顶部区域存在"淘金币"锚点。
 
-    两者同时满足才算根页；否则非根页（零动作失败关闭）。
-    顶部区域 = 锚点中心 y < 40% 屏高（推荐区假入口通常在下方且不唯一）。
-    "赚更多金币"入口的唯一性属于点击前校验（find_unique_ocr_span），
-    按钮缺失时仍走有界重试等入口出现，不在此判定。
+    顶部区域 = 锚点中心 y < 40% 屏高。真机首页"淘金币"文本出现多处
+    （标题 + 任务卡片等），故不要求全局唯一；推荐区假入口在页面下方
+    （顶部无"淘金币"锚点）即被拒绝。入口唯一性属点击前校验，按钮缺失
+    走有界重试，不在此判定。
     """
     _width, height = screen_size
-    anchors = [s for s in spans if COIN_PAGE_ANCHOR in s.text]
-    if len(anchors) != 1:
-        return False
-    return anchors[0].center[1] <= height * 0.4
+    return any(
+        COIN_PAGE_ANCHOR in span.text and span.center[1] <= height * 0.4
+        for span in spans
+    )
 
 
 def _reopen_task_popup(d, reader, screen, deadline=None):

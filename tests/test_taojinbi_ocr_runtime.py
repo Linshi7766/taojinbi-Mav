@@ -1285,8 +1285,9 @@ class CoinRootIdentityTests(unittest.TestCase):
             runtime._is_coin_root_page(self._root_spans(), (1080, 1920))
         )
 
-    def test_multiple_anchors_fail(self):
-        self.assertFalse(
+    def test_multiple_anchors_with_top_presence_is_still_root(self):
+        # 真机首页"淘金币"出现多处：顶部有锚点即根页，不要求全局唯一
+        self.assertTrue(
             runtime._is_coin_root_page(
                 self._root_spans(anchor_count=2), (1080, 1920)
             )
