@@ -2965,6 +2965,24 @@ class PopupCloseControlTests(unittest.TestCase):
         tap.assert_not_called()
         self.assertEqual(read.call_count, 1)
 
+    def test_safe_back_true_when_root_visible_but_close_fails(self):
+        """锚点可见 = 已到淘金币根页：弹窗关闭失败（纯遮挡/非弹窗态）
+        不再失败关闭——后续 _reopen_task_popup 会处理弹窗状态。"""
+        device = self._TapDevice()
+        plain_coin = [OcrSpan("淘金币", 0.9, (300, 100), (250, 80, 350, 120))]
+        with patch.object(
+            runtime, "ocr_screen", return_value=plain_coin
+        ), patch.object(
+            runtime, "in_taobao_and_safe", return_value=True
+        ), patch.object(
+            runtime, "_close_task_popup_via_more", return_value=False
+        ):
+            result = runtime._safe_back_to_coin_page(
+                device, None, deadline=None, require_action=False
+            )
+        self.assertTrue(result)
+        self.assertEqual(device.taps, [])
+
     def test_safe_back_uses_close_control_when_popup_blocks_root(self):
         """集成：回退到根页面但弹窗遮挡按钮 → 关闭弹窗 → 确认成功。"""
         device = self._TapDevice()

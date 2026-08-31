@@ -1096,7 +1096,7 @@ def _close_task_popup_via_more(d, reader, screen, deadline=None):
 
 
 def _safe_back_to_coin_page(d, reader, max_backs=MAX_BACKS, deadline=None,
-                            screen=None):
+                            screen=None, require_action=True):
     """在淘宝包内按返回键回退到淘金币首页；页面身份感知，绝不越界。
 
     页面身份规则（用户原则：脚本以当前界面为开始和结束，绝不 wander）：
@@ -1113,15 +1113,20 @@ def _safe_back_to_coin_page(d, reader, max_backs=MAX_BACKS, deadline=None,
         if not spans or not in_taobao_and_safe(d, spans):
             return False
         if any(COIN_PAGE_ANCHOR in span.text for span in spans):
-            # 已到根页面：按钮可见才算到达；被遮挡（弹窗开着）时先用右上角
-            # 关闭控件关弹窗，关不掉则原地失败，绝不按返回越界到首页。
+            # 已到根页面生态：锚点可见即视为到达（按钮/弹窗状态由后续
+            # _reopen_task_popup 处理）。按钮可见直接成功；弹窗遮挡时
+            # 尽力关弹窗，关不掉（纯遮挡/非弹窗态）也不失败关闭——
+            # 绝不在根页按返回（防止过冲到淘宝首页）。
             if find_unique_ocr_span(spans, MORE_COINS_ACTION) is not None:
                 return True
             if _close_task_popup_via_more(
                 d, reader, screen, deadline=deadline
             ):
-                return True
-            return False
+                return True  # 关弹窗成功 → 结算界面达成
+            # 关不掉：require_action=False（启动导航）锚点可见即已到根页，
+            # 弹窗状态由后续 _reopen_task_popup 处理；True（防过冲收尾）
+            # 原地失败，绝不 back 过冲首页。
+            return not require_action
         if not (
             any(LIST_ANCHOR in span.text for span in spans)
             or is_product_detail_page(spans)
@@ -1391,7 +1396,8 @@ def _execute_scan(device, reader, max_tasks, logger, mode, task_key=None,
                 # 页面感知回退（用户原则：以当前界面为开始和结束）：只在已知
                 # 流程页按返回、站在淘金币根页面绝不越界；未知页面零动作。
                 if not _safe_back_to_coin_page(
-                    device, reader, deadline=run_deadline
+                    device, reader, deadline=run_deadline,
+                    require_action=False,
                 ):
                     _emit_recovery_diagnostic(
                         device, reader, logger, "entry_walk_back_failed"
