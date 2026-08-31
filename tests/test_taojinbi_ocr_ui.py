@@ -592,6 +592,45 @@ class SafeBrowseTargetTests(unittest.TestCase):
         )
         self.assertIsNone(find_safe_browse_target(spans, self.SCREEN))
 
+    def test_merged_browse_reward_span_supplies_description_evidence(self):
+        # 真机 OCR 抖动：描述与奖励合并成"浏览(+35"单段（非动作词）。整行证据
+        # 提取必须保留"浏览"二字，不再因整段被当 reward 排除而缺证据。
+        spans = parse_ocr_spans(
+            [
+                (box(391, 300), "发现精选好物(1/3)", 0.98),
+                (box(327, 340), "浏览(+35", 0.65),
+                (box(943, 320), "去完成", 0.97),
+            ]
+        )
+        target = find_safe_browse_target(spans, self.SCREEN)
+        self.assertIsNotNone(target)
+        self.assertEqual(target.title, "发现精选好物")
+        self.assertEqual(target.progress, 1)
+        self.assertEqual(target.total, 3)
+
+    def test_merged_span_without_browse_word_is_still_rejected(self):
+        # 合并段但无"浏览"二字（如"币(+50"）：不满足描述证据，仍拒绝
+        spans = parse_ocr_spans(
+            [
+                (box(391, 300), "发现精选好物(0/4)", 0.98),
+                (box(327, 340), "币(+50", 0.65),
+                (box(943, 320), "去完成", 0.97),
+            ]
+        )
+        self.assertIsNone(find_safe_browse_target(spans, self.SCREEN))
+
+    def test_action_button_text_never_supplies_description(self):
+        # 动作按钮"去浏览"含"浏览"，但属于操作词，绝不能充当描述证据
+        spans = parse_ocr_spans(
+            [
+                (box(391, 300), "发现精选好物(0/4)", 0.98),
+                (box(327, 340), "", 0.9),
+                (box(560, 340), "+50", 0.7),
+                (box(943, 320), "去浏览", 0.97),
+            ]
+        )
+        self.assertIsNone(find_safe_browse_target(spans, self.SCREEN))
+
     def test_popup_task_action_near_bottom_is_tappable(self):
         # 当前真机弹窗的底部“看看#”按钮中心约在 y=1831，仍明显高于导航区。
         self.assertTrue(is_safe_tap_point((943, 1831), self.SCREEN))
