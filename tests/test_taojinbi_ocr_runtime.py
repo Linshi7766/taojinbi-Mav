@@ -2303,13 +2303,17 @@ class ExitCodeTableTests(unittest.TestCase):
             return self._entry().exit_code
 
     def test_main_returns_integer_exit_code(self):
+        # main 默认 watch=True 会真实启动面板进程：测试必须禁用
         with patch.object(
+            runtime, "_spawn_watch_panel", return_value=None
+        ) as panel, patch.object(
             runtime,
             "run_ocr_entry",
             return_value=RunOutcome(RunMode.EXECUTE, RunStatus.CANCELLED, "interrupted"),
         ):
             code = runtime.main(["--max-tasks", "1"])
         self.assertIsInstance(code, int)
+        panel.assert_called_once_with(enabled=True)
         self.assertEqual(code, 130)
 
     def test_main_block_uses_system_exit(self):
@@ -2317,7 +2321,7 @@ class ExitCodeTableTests(unittest.TestCase):
         fake_u2 = types.ModuleType("uiautomator2")
         fake_u2.connect = lambda _serial: (_ for _ in ()).throw(RuntimeError("offline"))
         with patch.dict(sys.modules, {"uiautomator2": fake_u2}), \
-             patch.object(sys, "argv", ["run_taojinbi.py"]), \
+             patch.object(sys, "argv", ["run_taojinbi.py", "--no-watch"]), \
              patch.object(runtime_logging, "create_runtime_logger",
                           return_value=_FakeRuntimeLogger()):
             with self.assertRaises(SystemExit) as raised:
