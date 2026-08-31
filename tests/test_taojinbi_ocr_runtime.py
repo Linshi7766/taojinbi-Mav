@@ -1079,9 +1079,9 @@ class RefreshIntegrationTests(unittest.TestCase):
             )
         self.assertTrue(browsed)
         self.assertEqual(result.reason, "refresh_not_found")
-        # 滞后宽限：等待一次宽限秒数；预算 attempts=2 已用尽，不再复核
+        # 预算 attempts=2 已用尽：不等宽限（不会复核），直接收场
         self.assertEqual(refresh.call_count, 1)
-        self.assertIn(runtime.REFRESH_LAG_GRACE_S, sleeps)
+        self.assertNotIn(runtime.REFRESH_LAG_GRACE_S, sleeps)
         refresh_kwargs = refresh.call_args.kwargs
         self.assertEqual(refresh_kwargs.get("expected_progress"), 1)
         self.assertEqual(refresh_kwargs.get("expected_total"), 3)
@@ -1199,9 +1199,9 @@ class RefreshIntegrationTests(unittest.TestCase):
             result, browsed = runtime.run_one_safe_browse_task(
                 _WorkingDevice(), None, "发现精选好物", 3
             )
-        # 宽限后预算已用尽（attempts=2 用满）：不再复核，直接收场
+        # 预算 attempts=2 一次用尽：不等宽限（不会复核），直接收场
         self.assertEqual(refresh.call_count, 1)
-        self.assertEqual(sleeps.count(runtime.REFRESH_LAG_GRACE_S), 1)
+        self.assertEqual(sleeps.count(runtime.REFRESH_LAG_GRACE_S), 0)
         self.assertEqual(result.reason, "refresh_not_found")
 
     def test_refresh_budget_not_reset_by_grace_window(self):
@@ -1227,9 +1227,9 @@ class RefreshIntegrationTests(unittest.TestCase):
             result, browsed = runtime.run_one_safe_browse_task(
                 _WorkingDevice(), None, "发现精选好物", 3
             )
-        # 预算 attempts=2 一次用尽 → 宽限后不再复核（总刷新次数不超过 2）
+        # 预算 attempts=2 一次用尽 → 不等宽限直接收场（总刷新不超过 2）
         self.assertEqual(refresh.call_count, 1)
-        self.assertEqual(sleeps.count(runtime.REFRESH_LAG_GRACE_S), 1)
+        self.assertEqual(sleeps.count(runtime.REFRESH_LAG_GRACE_S), 0)
         self.assertEqual(result.reason, "refresh_not_found")
 
     def test_rotated_task_after_refresh_is_not_entered_again(self):

@@ -872,7 +872,11 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
             if recovery.status == "not_found" and grace_pending:
                 # 展示滞后宽限（2026-08-29：浏览计数常延迟数分钟才反映到
                 # 读数，立即结论会误停——宽限后做一次末次复核）。
-                # 预算不重置：两次刷新上限是全局硬边界；用尽由循环开头收场。
+                # 预算不重置：两次刷新上限是全局硬边界。预算已用尽时
+                # 宽限等待无意义（不会复核），直接收场，不空等。
+                if refresh_attempts_used >= REFRESH_RECOVERY_ATTEMPTS:
+                    result = replace(result, reason="refresh_not_found")
+                    break
                 grace_pending = False
                 print(f"{label}：等待展示滞后宽限 "
                       f"{REFRESH_LAG_GRACE_S} 秒后末次复核")

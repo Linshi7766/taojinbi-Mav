@@ -49,6 +49,22 @@ class SessionEventLoggerTests(unittest.TestCase):
             event = json.loads(lines[0])
             self.assertNotIn("serial", event)
 
+    def test_allows_session_config_fields(self):
+        # session_started 的合法配置字段必须保留（面板显示任务范围用）
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = wait_for_task.SessionEventLogger(Path(tmp))
+            logger.emit(
+                "session_started", task="search", max_tasks=1,
+                daily_cap=5, session_deadline_min=60,
+            )
+            event = json.loads(
+                logger.path.read_text(encoding="utf-8").splitlines()[0]
+            )
+        self.assertEqual(event["task"], "search")
+        self.assertEqual(event["max_tasks"], 1)
+        self.assertEqual(event["daily_cap"], 5)
+        self.assertEqual(event["session_deadline_min"], 60)
+
     def test_unknown_private_fields_are_dropped(self):
         # OCR 原文、商品名、坐标等隐私字段不得进入会话日志。
         with tempfile.TemporaryDirectory() as tmp:

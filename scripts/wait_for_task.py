@@ -97,10 +97,7 @@ def _spawn_ocr_sidecar(timeout: float = 150.0):
         print(f"OCR sidecar 就绪（{addr[0]}:{addr[1]}），本轮守候复用常驻模型")
         return proc, addr
     print("OCR sidecar 未能在时限内就绪，回退每轮自加载")
-    try:
-        proc.terminate()
-    except Exception:
-        pass
+    _terminate_proc(proc)
     return None, None
 
 TASK_CHOICES = ("search", "hashtag", "featured_goods", "any")
@@ -242,6 +239,8 @@ ALLOWED_SESSION_LOG_FIELDS = frozenset({
     "reason", "tasks_session", "tasks_today",
     "cycle", "exit_code", "detected", "task_status", "status",
     "kind", "seconds", "stage", "attempt",
+    # session_started 的合法配置字段（面板显示任务范围用）
+    "task", "max_tasks", "daily_cap", "session_deadline_min",
 })
 
 
