@@ -62,6 +62,16 @@ jobs:
           fi
           echo "offline run clean: no runtime logs, no device or model access"
 
+      - name: Smoke CLI entrypoints (--help)
+        shell: bash
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python scripts/run_taojinbi.py --help > /dev/null
+          python scripts/wait_for_task.py --help > /dev/null
+          echo "entrypoints --help ok"
+
       - name: Build sdist and wheel
         shell: bash
         run: |
