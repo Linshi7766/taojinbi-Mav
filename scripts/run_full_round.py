@@ -30,6 +30,21 @@ ROUND_GAP_S = 5          # 轮间等待（结算/计数刷新）
 _MAX_READ_TRIES = 3
 
 
+def latest_run_reason(log_dir):
+    """最新 run 日志的 run_finished reason；无日志/无 run_finished 返回 None。"""
+    files = sorted(log_dir.glob("taojinbi-*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if not files:
+        return None
+    for line in reversed(files[-1].read_text(encoding="utf-8").splitlines()):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("event") == "run_finished":
+            return e.get("reason")
+    return None
+
+
 def latest_task_finished(log_dir):
     """最新 run 日志里最后一条 task_finished（含 task_key/status/reason）。"""
     files = sorted(log_dir.glob("taojinbi-*.jsonl"), key=lambda p: p.stat().st_mtime)
@@ -77,6 +92,11 @@ def run_full_round(serial, before=None, *, python=None, gap=ROUND_GAP_S,
                 outcomes[task] = f"in_progress({reason})"
                 continue
             stall += 1
+            if (latest_run_reason(log_dir) == "list_anchor_missing"
+                    and stall >= 2):
+                # 任务行今日未出现（轮换制）：记录并跳过，不空转
+                outcomes[task] = "not_available_today"
+                break
             outcomes[task] = f"stalled({reason or 'no_finish'})"
             if stall >= stall_limit:
                 break

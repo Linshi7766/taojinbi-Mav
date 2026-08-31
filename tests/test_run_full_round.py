@@ -12,19 +12,19 @@ sys.path.insert(0, str(REPO / "scripts"))
 import run_full_round as rfr
 
 
-def _write_log(log_dir, status, reason="ok"):
-    """写一个最新 run 日志（含 task_finished）。"""
+def _write_log(log_dir, status, reason="ok", run_reason="x",
+              with_finished=True):
+    """写一个最新 run 日志；with_finished=False 模拟任务未执行（list_anchor_missing）。"""
     log_dir.mkdir(parents=True, exist_ok=True)
     path = log_dir / "taojinbi-20260831T000000Z-abc.jsonl"
-    path.write_text(
-        json.dumps({"event": "run_started", "reason": "started"}) + "\n"
-        + json.dumps({
+    parts = [json.dumps({"event": "run_started", "reason": "started"})]
+    if with_finished:
+        parts.append(json.dumps({
             "event": "task_finished", "task_key": "search",
             "status": status, "reason": reason,
-        }) + "\n"
-        + json.dumps({"event": "run_finished", "reason": "x"}) + "\n",
-        encoding="utf-8",
-    )
+        }))
+    parts.append(json.dumps({"event": "run_finished", "reason": run_reason}))
+    path.write_text("\n".join(parts) + "\n", encoding="utf-8")
     return path
 
 
@@ -50,8 +50,13 @@ class RunFullRoundTests(unittest.TestCase):
 
             def fake_run_one(python, serial, task):
                 calls.append(task)
-                status = statuses.pop(0) if statuses else "stalled"
-                _write_log(log_dir, status)
+                item = statuses.pop(0) if statuses else ("stalled", "x")
+                if isinstance(item, str):
+                    status, run_reason, with_f = item, "x", True
+                else:
+                    status, run_reason, with_f = (item + (True,))[:3]
+                _write_log(log_dir, status, run_reason=run_reason,
+                           with_finished=with_f)
 
             outcomes, balance = rfr.run_full_round(
                 "TEST", before=None, python="py", gap=gap,
@@ -89,6 +94,19 @@ class RunFullRoundTests(unittest.TestCase):
         self.assertEqual(len(calls), 9)
         self.assertEqual(outcomes["search"], "stalled(ok)")
         self.assertEqual(calls.count("hashtag"), 3)
+
+    def test_missing_task_skipped_after_two_anchor_failures(self):
+        # featured_goods 今日未出现：2 次 list_anchor_missing 即跳过，
+        # 不等到 stall_limit（3 次）浪费轮次
+        statuses = (
+            ["completed", "completed"]            # search, hashtag
+            + [("stalled", "list_anchor_missing", False)] * 5  # featured_goods
+        )
+        outcomes, calls = self._run(statuses)
+        self.assertEqual(outcomes["search"], "completed")
+        self.assertEqual(outcomes["hashtag"], "completed")
+        self.assertEqual(outcomes["featured_goods"], "not_available_today")
+        self.assertEqual(calls.count("featured_goods"), 2)
 
     def test_all_three_tasks_attempted(self):
         outcomes, calls = self._run(
