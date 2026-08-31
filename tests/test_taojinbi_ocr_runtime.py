@@ -1263,6 +1263,57 @@ class RefreshIntegrationTests(unittest.TestCase):
         self.assertEqual(enter.call_count, 1)
 
 
+class CoinRootIdentityTests(unittest.TestCase):
+    """淘金币根页面身份合同：唯一顶部锚点 + 唯一入口，缺一即非根页。"""
+
+    def _root_spans(self, anchor_y=100, anchor_count=1, action=True):
+        spans = [
+            OcrSpan(
+                "淘金币", 0.99, (300, anchor_y),
+                (250, anchor_y - 20, 350, anchor_y + 20),
+            )
+            for _ in range(anchor_count)
+        ]
+        if action:
+            spans.append(
+                OcrSpan("赚更多金币", 0.99, (500, 800), (450, 780, 550, 820))
+            )
+        return spans
+
+    def test_unique_top_anchor_with_unique_action_is_root(self):
+        self.assertTrue(
+            runtime._is_coin_root_page(self._root_spans(), (1080, 1920))
+        )
+
+    def test_multiple_anchors_fail(self):
+        self.assertFalse(
+            runtime._is_coin_root_page(
+                self._root_spans(anchor_count=2), (1080, 1920)
+            )
+        )
+
+    def test_anchor_below_top_region_fails(self):
+        self.assertFalse(
+            runtime._is_coin_root_page(
+                self._root_spans(anchor_y=1000), (1080, 1920)
+            )
+        )
+
+    def test_missing_action_still_root_if_anchor_unique_and_top(self):
+        # 按钮缺失属点击前校验（走有界重试），不影响根页身份判定
+        self.assertTrue(
+            runtime._is_coin_root_page(
+                self._root_spans(action=False), (1080, 1920)
+            )
+        )
+
+    def test_no_anchor_fails(self):
+        spans = [
+            OcrSpan("赚更多金币", 0.99, (500, 800), (450, 780, 550, 820))
+        ]
+        self.assertFalse(runtime._is_coin_root_page(spans, (1080, 1920)))
+
+
 class PopupReopenRetryTests(unittest.TestCase):
     def _coin_page_spans(self, include_action=False):
         spans = [

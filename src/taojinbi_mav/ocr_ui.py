@@ -636,9 +636,9 @@ def find_result_product_candidates(spans, screen_size,
 
 
 def find_discovery_candidates(spans, screen_size):
-    """返回“搜索发现”栏下方可随机点击的真实推荐词候选。
+    """返回"搜索发现"栏下方可随机点击的真实推荐词候选。
 
-    以“搜索发现”区块标题的 y 为界，取其严格下方、落在安全点击区、且非广告/区块
+    以"搜索发现"区块标题的 y 为界，取其严格下方、落在安全点击区、且非广告/区块
     元信息噪声的段；随机点其一即对该词发起搜索并进入结果流。无区块标题时返回 []。
     """
     anchors = [s for s in spans if SEARCH_DISCOVERY_ANCHOR in s.text]
@@ -652,6 +652,114 @@ def find_discovery_candidates(spans, screen_size):
         and not _is_search_noise(span.text)
         and is_safe_tap_point(span.center, screen_size)
     ]
+
+
+# ---------------------------------------------------------------------------
+# P0-1 两帧安全边界：结构化区域 + 第一行限定 + 第二帧重定位。
+# 设计来自 Codex 第二轮核验（DiscoveryRegion / DiscoveryCandidate）。
+# ---------------------------------------------------------------------------
+
+_MIN_DISCOVERY_CONFIDENCE = 0.60   # 候选最低置信度（低于视为不可靠）
+_ROW_TOLERANCE_RATIO = 0.03        # "第一行"聚类容差（占屏高比例）
+_REVALIDATE_SHIFT_RATIO = 0.06     # 第二帧重定位最大位移（占屏宽比例）
+
+
+@dataclass(frozen=True)
+class DiscoveryRegion:
+    """"搜索发现"区域边界（锚点下方第一行文本带），不含任何 OCR 原文。"""
+
+    header_y: float
+    top_y: float
+    bottom_y: float
+
+
+@dataclass(frozen=True)
+class DiscoveryCandidate:
+    """单个候选词：仅在本次两帧匹配的内存中使用，绝不写入事件/日志。"""
+
+    text: str
+    center: tuple
+    bbox: tuple
+    confidence: float
+
+
+def locate_discovery_region(spans, screen_size):
+    """定位"搜索发现"区域：锚点必须唯一，区域 = 锚点下方第一个文本行。
+
+    第一行按屏高比例容差聚类；第一行整行不可用时返回仅含上界信息的
+    region（候选函数会因下界过窄返回空）——绝不向下继续寻找商品行。
+    锚点缺失或不唯一返回 None。
+    """
+    _width, height = screen_size
+    anchors = [s for s in spans if SEARCH_DISCOVERY_ANCHOR in s.text]
+    if len(anchors) != 1:
+        return None
+    header_y = anchors[0].center[1]
+    below = [
+        s for s in spans
+        if s.center[1] > header_y
+        and SEARCH_DISCOVERY_ANCHOR not in s.text
+    ]
+    if not below:
+        return DiscoveryRegion(
+            header_y=header_y, top_y=header_y, bottom_y=header_y
+        )
+    tolerance = height * _ROW_TOLERANCE_RATIO
+    first_row_y = min(s.center[1] for s in below)
+    row_spans = [
+        s for s in below if abs(s.center[1] - first_row_y) <= tolerance
+    ]
+    bottom_y = max(s.bounds[3] for s in row_spans)
+    return DiscoveryRegion(
+        header_y=header_y, top_y=header_y, bottom_y=bottom_y
+    )
+
+
+def find_discovery_candidates(spans, screen_size):
+    """返回"搜索发现"栏下方可随机点击的真实推荐词候选（区域受限版）。
+
+    在 locate_discovery_region 的第一行边界内取候选：交易/噪声排除 +
+    安全点击区 + 最低置信度。第一行全部不安全时返回空（不向下找）。
+    """
+    region = locate_discovery_region(spans, screen_size)
+    if region is None:
+        return []
+    width, height = screen_size
+    row_tolerance = height * _ROW_TOLERANCE_RATIO
+    return [
+        span for span in spans
+        if region.top_y < span.center[1] <= region.bottom_y + row_tolerance
+        and span.confidence >= _MIN_DISCOVERY_CONFIDENCE
+        and SEARCH_DISCOVERY_ANCHOR not in span.text
+        and not _is_search_noise(span.text)
+        and is_safe_tap_point(span.center, screen_size)
+    ]
+
+
+def revalidate_discovery_candidate(original, fresh_spans, screen_size):
+    """第二帧重定位：同一文本必须唯一且位置接近；否则 None（零点击）。
+
+    返回第二帧的新 DiscoveryCandidate（点击必须使用第二帧坐标，不复用
+    第一帧旧坐标）。消失、重复、移位过大、坐标不安全均返回 None。
+    """
+    width, _height = screen_size
+    max_shift = width * _REVALIDATE_SHIFT_RATIO
+    normalized = original.text.strip()
+    matches = [s for s in fresh_spans if s.text.strip() == normalized]
+    if len(matches) != 1:
+        return None  # 消失或歧义（同名多条）
+    fresh = matches[0]
+    if (abs(fresh.center[0] - original.center[0]) > max_shift
+            or abs(fresh.center[1] - original.center[1]) > max_shift):
+        return None  # 移位过大
+    if not is_safe_tap_point(fresh.center, screen_size):
+        return None
+    return DiscoveryCandidate(
+        text=fresh.text,
+        center=fresh.center,
+        bbox=fresh.bounds,
+        confidence=fresh.confidence,
+    )
 
 
 def screen_text_signature(spans):

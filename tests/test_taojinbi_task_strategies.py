@@ -294,9 +294,9 @@ class SearchBrowseStrategyTests(unittest.TestCase):
         result_feed = [
             OcrSpan("金币可领取", 0.99, (300, 600), (100, 580, 500, 620))
         ]
-        # 每词帧数（入口判定 + 等结果 + 15 次保底滑动检查）：
-        # 词1: entry, feed×16（徽标不可读 → SEARCH_SCROLLS 保底 15 滑）
-        screens = iter([entry] + [result_feed] * 16)
+        # 每词帧数（入口判定 + 第二帧确认 + 等结果 + 15 次保底滑动检查）：
+        # 词1: entry, entry, feed×16（徽标不可读 → SEARCH_SCROLLS 保底 15 滑）
+        screens = iter([entry, entry] + [result_feed] * 16)
         context = strategies.StrategyContext(
             device=device,
             reader=None,
@@ -331,7 +331,7 @@ class SearchBrowseStrategyTests(unittest.TestCase):
             strategies.SEARCH_SCROLLS // 2,
         )
         self.assertEqual(output.call_count, 1)
-        output.assert_any_call("搜一搜：已选择一个搜索发现关键词")
+        output.assert_any_call("搜一搜：第二帧确认通过，点击搜索发现关键词")
 
     def test_scroll_follows_badge_until_confirmed_absent(self):
         """徽标“浏览N秒可领”可见时持续滑动，连续消失 2 次即收（计时已满足）。"""
@@ -347,7 +347,7 @@ class SearchBrowseStrategyTests(unittest.TestCase):
         plain_feed = [
             OcrSpan("商品结果标题", 0.99, (300, 600), (100, 580, 500, 620))
         ]
-        screens = iter([entry] + [badge_feed] * 4 + [plain_feed] * 2)
+        screens = iter([entry, entry] + [badge_feed] * 4 + [plain_feed] * 2)
         context = strategies.StrategyContext(
             device=device,
             reader=None,
@@ -381,7 +381,7 @@ class SearchBrowseStrategyTests(unittest.TestCase):
         badge_feed = [
             OcrSpan("浏览25秒可领", 0.94, (548, 103), (548, 90, 880, 130))
         ]
-        screens = iter([entry] + [badge_feed] * 60)
+        screens = iter([entry, entry] + [badge_feed] * 60)
         context = strategies.StrategyContext(
             device=device,
             reader=None,
@@ -422,9 +422,10 @@ class SearchBrowseStrategyTests(unittest.TestCase):
         result_plain = [
             OcrSpan("金币可领取", 0.99, (300, 600), (100, 580, 500, 620)),
         ]
-        # 帧：入口(带徽标) → 等结果 → 4 滑徽标帧 + 2 滑消失确认帧 = 6 滑
+        # 帧：入口(带徽标) → 第二帧确认 → 等结果 → 4 滑徽标帧 + 2 滑消失确认帧
         screens = iter(
-            [entry_with_badge] + [result_feed] * 4 + [result_plain] * 2
+            [entry_with_badge, entry_with_badge]
+            + [result_feed] * 4 + [result_plain] * 2
         )
         context = strategies.StrategyContext(
             device=device,
@@ -487,7 +488,7 @@ class SearchBrowseStrategyTests(unittest.TestCase):
         result_feed = [
             OcrSpan("金币可领取", 0.99, (300, 600), (100, 580, 500, 620))
         ]
-        screens = iter([entry] + [result_feed] * 16)
+        screens = iter([entry, entry] + [result_feed] * 16)
         context = strategies.StrategyContext(
             device=device,
             reader=None,
@@ -513,7 +514,7 @@ class SearchBrowseStrategyTests(unittest.TestCase):
             str(call) for call in output.call_args_list
         )
         self.assertNotIn("鱼油推荐", printed)
-        self.assertIn("搜一搜：已选择一个搜索发现关键词", printed)
+        self.assertIn("搜一搜：第二帧确认通过，点击搜索发现关键词", printed)
 
     def test_search_strategy_fails_closed_without_reliable_candidate(self):
         context = strategies.StrategyContext(

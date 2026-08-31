@@ -12,6 +12,7 @@ import json
 import unittest
 
 from taojinbi_mav.task_core import UNSAFE_ACTION_MARKERS
+from taojinbi_mav import ocr_ui
 from taojinbi_mav.ocr_ui import (
     OcrSpan,
     PROGRESS_RE,
@@ -1183,3 +1184,99 @@ class PageFingerprintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DiscoveryTwoFrameSafetyTests(unittest.TestCase):
+    """P0-1 两帧安全边界：第一行限定 + 第二帧重定位（Codex 核验设计）。"""
+
+    SCREEN = (1080, 1920)
+
+    def _entry(self, keyword_text="鱼油推荐", keyword_y=700, conf=0.9):
+        return [
+            OcrSpan("搜索发现", 0.99, (200, 500), (100, 480, 300, 520)),
+            OcrSpan(
+                keyword_text, conf, (300, keyword_y),
+                (200, keyword_y - 20, 400, keyword_y + 20),
+            ),
+        ]
+
+    def _candidate(self, text="鱼油推荐", center=(300, 700)):
+        return ocr_ui.DiscoveryCandidate(
+            text=text, center=center,
+            bbox=(center[0] - 100, center[1] - 20,
+                  center[0] + 100, center[1] + 20),
+            confidence=0.9,
+        )
+
+    def test_first_row_all_noise_does_not_fall_to_second_row(self):
+        # 第一行全是噪声（不可点）→ 返回空；绝不跳到第二行选商品行
+        spans = [
+            OcrSpan("搜索发现", 0.99, (200, 500), (100, 480, 300, 520)),
+            OcrSpan("快速上热门", 0.99, (300, 700), (200, 680, 400, 720)),
+            OcrSpan("鱼油推荐", 0.99, (300, 1100), (200, 1080, 400, 1120)),
+        ]
+        self.assertEqual(
+            ocr_ui.find_discovery_candidates(spans, self.SCREEN), []
+        )
+
+    def test_low_confidence_keyword_excluded(self):
+        spans = self._entry(conf=0.40)
+        self.assertEqual(
+            ocr_ui.find_discovery_candidates(spans, self.SCREEN), []
+        )
+
+    def test_revalidate_none_when_candidate_absent(self):
+        original = self._candidate()
+        self.assertIsNone(
+            ocr_ui.revalidate_discovery_candidate(original, [], self.SCREEN)
+        )
+
+    def test_revalidate_none_when_ambiguous(self):
+        original = self._candidate()
+        dup = OcrSpan("鱼油推荐", 0.9, (300, 700), (200, 680, 400, 720))
+        dup2 = OcrSpan("鱼油推荐", 0.9, (600, 700), (500, 680, 700, 720))
+        self.assertIsNone(
+            ocr_ui.revalidate_discovery_candidate(
+                original, [dup, dup2], self.SCREEN
+            )
+        )
+
+    def test_revalidate_none_when_shifted_beyond_tolerance(self):
+        original = self._candidate(center=(300, 700))
+        # 移动 100px > 屏宽 6%（64.8px）→ 视为页面变化，零点击
+        shifted = OcrSpan(
+            "鱼油推荐", 0.9, (400, 700), (300, 680, 500, 720)
+        )
+        self.assertIsNone(
+            ocr_ui.revalidate_discovery_candidate(
+                original, [shifted], self.SCREEN
+            )
+        )
+
+    def test_revalidate_returns_fresh_coordinates_when_stable(self):
+        original = self._candidate(center=(300, 700))
+        # 移动 30px（允许内）→ 返回第二帧新坐标
+        fresh = OcrSpan("鱼油推荐", 0.9, (330, 700), (230, 680, 430, 720))
+        result = ocr_ui.revalidate_discovery_candidate(
+            original, [fresh], self.SCREEN
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.center, (330, 700))
+
+    def test_scaled_resolution_judges_consistently(self):
+        # 等比缩放 2 倍（2160x3840）：同一布局判定一致（候选仍在第一行）
+        base = self._entry()
+        scaled = [
+            OcrSpan(s.text, s.confidence,
+                    (s.center[0] * 2, s.center[1] * 2),
+                    (s.bounds[0] * 2, s.bounds[1] * 2,
+                     s.bounds[2] * 2, s.bounds[3] * 2))
+            for s in base
+        ]
+        base_candidates = ocr_ui.find_discovery_candidates(base, self.SCREEN)
+        scaled_candidates = ocr_ui.find_discovery_candidates(
+            scaled, (2160, 3840)
+        )
+        self.assertEqual(
+            [c.text for c in base_candidates],
+            [c.text for c in scaled_candidates],
+        )

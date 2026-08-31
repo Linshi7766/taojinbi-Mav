@@ -7,6 +7,7 @@ from typing import Callable
 
 from taojinbi_mav.ocr_ui import (
     find_discovery_candidates,
+    revalidate_discovery_candidate,
     is_search_entry_page,
     is_search_result_feed,
     page_fingerprint,
@@ -242,8 +243,26 @@ def _browse_one_keyword(context):
             )
             return StrategyResult(False, "discovery_candidate_unavailable")
         pick = random.choice(candidates)
-        print("搜一搜：已选择一个搜索发现关键词")
-        if not context.safe_tap(pick.center):
+        # 第二帧确认（P0-1）：重新读屏重定位，消失/歧义/移位即零点击；
+        # 点击必须使用第二帧坐标，不复用第一帧旧坐标。
+        fresh_spans = context.read_screen()
+        if not context.screen_is_safe(fresh_spans):
+            return StrategyResult(False, "unsafe_screen")
+        if not is_search_entry_page(fresh_spans):
+            _emit_page_diagnostic(
+                context, fresh_spans, "search_entry_unavailable"
+            )
+            return StrategyResult(False, "search_entry_unavailable")
+        repick = revalidate_discovery_candidate(
+            pick, fresh_spans, context.screen
+        )
+        if repick is None:
+            _emit_page_diagnostic(
+                context, fresh_spans, "candidate_revalidate_failed"
+            )
+            continue
+        print("搜一搜：第二帧确认通过，点击搜索发现关键词")
+        if not context.safe_tap(repick.center):
             continue
         waited = _wait_for_search_result(context)
         if waited.ok:
