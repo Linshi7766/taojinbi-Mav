@@ -982,6 +982,21 @@ def _scroll_coin_page_to_top(d, screen, deadline=None, max_swipes=3):
         _deadline_sleep(deadline, SWIPE_SETTLE)
 
 
+def _is_coin_root_page(spans, screen_size):
+    """淘金币根页面身份合同：唯一"淘金币"锚点 + 锚点在顶部区域。
+
+    两者同时满足才算根页；否则非根页（零动作失败关闭）。
+    顶部区域 = 锚点中心 y < 40% 屏高（推荐区假入口通常在下方且不唯一）。
+    "赚更多金币"入口的唯一性属于点击前校验（find_unique_ocr_span），
+    按钮缺失时仍走有界重试等入口出现，不在此判定。
+    """
+    _width, height = screen_size
+    anchors = [s for s in spans if COIN_PAGE_ANCHOR in s.text]
+    if len(anchors) != 1:
+        return False
+    return anchors[0].center[1] <= height * 0.4
+
+
 def _reopen_task_popup(d, reader, screen, deadline=None):
     """在淘金币首页点击"赚更多金币"重新打开任务弹窗并等待列表锚点。
 
@@ -996,14 +1011,16 @@ def _reopen_task_popup(d, reader, screen, deadline=None):
             if not in_taobao_and_safe(d, spans):
                 return False
             if attempt == 0:
-                # 只在确认是淘金币根页面（含"淘金币"锚点）后才滚顶：页面
-                # 可能停在推荐区（假"赚更多金币"入口）。非根页零动作失败
-                # 关闭；按钮缺失仍走下方有界重试（等入口出现）。
-                if not any(COIN_PAGE_ANCHOR in span.text for span in spans):
+                # 根页面身份合同：唯一顶部锚点 + 唯一入口，缺一即非根页
+                # （零动作失败关闭）；按钮缺失仍走下方有界重试。
+                if not _is_coin_root_page(spans, screen):
                     return False
                 _scroll_coin_page_to_top(d, screen, deadline=deadline)
                 spans = ocr_screen(d, reader)
                 if not in_taobao_and_safe(d, spans):
+                    return False
+                # 滚动后重新确认根页身份（滚动可能落入推荐区假入口）
+                if not _is_coin_root_page(spans, screen):
                     return False
 
             action = find_unique_ocr_span(spans, MORE_COINS_ACTION)
