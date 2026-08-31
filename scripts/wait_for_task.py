@@ -100,7 +100,7 @@ def _spawn_ocr_sidecar(timeout: float = 150.0):
     _terminate_proc(proc)
     return None, None
 
-TASK_CHOICES = ("search", "hashtag", "featured_goods", "any")
+TASK_CHOICES = ("search", "hashtag", "featured_goods", "immersive", "any")
 DEFAULT_MIN_GAP_S = 180        # 空窗检查间隔下限（3 分钟）
 DEFAULT_MAX_GAP_S = 480        # 空窗检查间隔上限（8 分钟）
 DEFAULT_DONE_REST_MIN_S = 300  # 做完一个任务后的休息下限（5 分钟）
@@ -325,7 +325,7 @@ def _parse_args(argv=None):
         default="any",
         choices=TASK_CHOICES,
         help="目标任务键：any=扫描全部已注册任务（默认）；"
-        "或 search / hashtag / featured_goods",
+        "或 search / hashtag / featured_goods / immersive",
     )
     parser.add_argument(
         "--max-tasks",

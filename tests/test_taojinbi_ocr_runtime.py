@@ -654,7 +654,7 @@ class SafeBrowseLoopTests(unittest.TestCase):
 
     def test_unconfirmed_task_stops_loop_before_next_task(self):
         target = BrowseTarget(
-            title="好物沉浸看",
+            title="拍立淘逛感兴趣的宝贝",
             progress=0,
             total=5,
             title_center=(300, 500),
@@ -693,7 +693,7 @@ class SafeBrowseLoopTests(unittest.TestCase):
 
     def test_device_error_stops_loop_before_next_task(self):
         target = BrowseTarget(
-            title="好物沉浸看",
+            title="拍立淘逛感兴趣的宝贝",
             progress=0,
             total=5,
             title_center=(300, 500),
@@ -2382,11 +2382,13 @@ class ExitCodeTableTests(unittest.TestCase):
 
 
 class _ActionDevice:
-    """记录 press 的设备桩（无 deadline 语义）。"""
+    """记录 press 与 click 的设备桩（无 deadline 语义）。"""
 
     def __init__(self, package=runtime.TB_APP):
         self.package = package
         self.press_count = 0
+        self.tap_count = 0
+        self.last_tap = None
 
     def window_size(self):
         return (1080, 2400)
@@ -2399,6 +2401,10 @@ class _ActionDevice:
 
     def press(self, *_args, **_kwargs):
         self.press_count += 1
+
+    def click(self, x, y, *_args, **_kwargs):
+        self.tap_count += 1
+        self.last_tap = (x, y)
 
 
 class _SequenceReader:
@@ -2482,6 +2488,86 @@ class SafeBackToCoinPageTests(unittest.TestCase):
         self.assertFalse(runtime._safe_back_to_coin_page(device, reader))
         self.assertEqual(device.press_count, 0)
 
+
+class NavigateHomeToCoinPageTests(unittest.TestCase):
+    """_navigate_home_to_coin_page：淘宝首页 → 淘金币根页自动导航。"""
+
+    def test_taps_coin_entry_button_when_home_is_confirmed(self):
+        # 淘宝首页强信号（顶 tab + 底栏双命中）+ 领淘金币图标 → 点击后到达淘金币根页
+        home_spans = [
+            (_box(80, 95), "关注", 0.95),
+            (_box(200, 95), "推荐", 0.95),
+            (_box(330, 95), "闪购", 0.9),
+            (_box(70, 1880), "视频", 0.9),
+            (_box(330, 1880), "消息", 0.9),
+            (_box(540, 1880), "购物车", 0.9),
+            (_box(870, 1880), "我的淘宝", 0.9),
+            (_box(290, 410), "领淘金币", 0.95),
+        ]
+        root_spans = [
+            (_box(150, 130), "淘金币", 0.99),
+            (_box(540, 597), "赚更多金币", 0.97),
+        ]
+        reader = _SequenceReader([home_spans, root_spans])
+        device = _ActionDevice()
+        result = runtime._navigate_home_to_coin_page(device, reader, (1080, 1920))
+        self.assertTrue(result)
+        self.assertEqual(device.tap_count, 1)
+        # 校验点到了"领淘金币"图标的中心
+        self.assertEqual(device.last_tap, (290, 410))
+
+    def test_returns_false_when_weak_signal_only(self):
+        # 弱信号（仅"领淘金币"图标在屏）→ 不盲点
+        spans = [(_box(290, 410), "领淘金币", 0.95)]
+        reader = _SequenceReader([spans])
+        device = _ActionDevice()
+        result = runtime._navigate_home_to_coin_page(device, reader, (1080, 1920))
+        self.assertFalse(result)
+        self.assertEqual(device.tap_count, 0)
+
+    def test_returns_false_on_unknown_page(self):
+        # 完全无关页面（无首页锚点）→ 原地停止
+        spans = [(_box(150, 130), "未知页面", 0.9)]
+        reader = _SequenceReader([spans])
+        device = _ActionDevice()
+        result = runtime._navigate_home_to_coin_page(device, reader, (1080, 1920))
+        self.assertFalse(result)
+        self.assertEqual(device.tap_count, 0)
+
+    def test_returns_false_when_entry_icon_missing(self):
+        # 强信号首页 + 但 OCR 误读没看到"领淘金币" → 不盲点
+        spans = [
+            (_box(80, 95), "关注", 0.95),
+            (_box(200, 95), "推荐", 0.95),
+            (_box(70, 1880), "视频", 0.9),
+            (_box(330, 1880), "消息", 0.9),
+            (_box(540, 1880), "购物车", 0.9),
+            (_box(870, 1880), "我的淘宝", 0.9),
+        ]
+        reader = _SequenceReader([spans, spans, spans, spans])
+        device = _ActionDevice()
+        result = runtime._navigate_home_to_coin_page(device, reader, (1080, 1920))
+        self.assertFalse(result)
+        self.assertEqual(device.tap_count, 0)
+
+    def test_low_confidence_entry_icon_is_rejected(self):
+        # 强信号首页 + "领淘金币"图标置信度过低（< 0.5）→ 不盲点
+        spans = [
+            (_box(80, 95), "关注", 0.95),
+            (_box(200, 95), "推荐", 0.95),
+            (_box(70, 1880), "视频", 0.9),
+            (_box(330, 1880), "消息", 0.9),
+            (_box(540, 1880), "购物车", 0.9),
+            (_box(870, 1880), "我的淘宝", 0.9),
+            (_box(290, 410), "领淘金币", 0.4),
+        ]
+        device = _ActionDevice()
+        reader = _SequenceReader([spans, spans, spans, spans])
+        result = runtime._navigate_home_to_coin_page(device, reader, (1080, 1920))
+        self.assertFalse(result)
+        self.assertEqual(device.tap_count, 0)
+
+
     def test_coin_page_stops_without_pressing(self):
         device = _ActionDevice()
         reader = _SequenceReader([_COIN_PAGE_FRAME])
@@ -2542,6 +2628,10 @@ class TaskKeyRoutingTests(unittest.TestCase):
     def test_featured_goods_routes_to_exact_title(self):
         captured = self._run("featured_goods")
         self.assertEqual(captured.get("only_titles"), ["发现精选好物"])
+
+    def test_immersive_routes_to_exact_title(self):
+        captured = self._run("immersive")
+        self.assertEqual(captured.get("only_titles"), ["好物沉浸看"])
 
     def test_none_routes_to_all_titles(self):
         captured = self._run(None)

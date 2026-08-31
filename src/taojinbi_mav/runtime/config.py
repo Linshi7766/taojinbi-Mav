@@ -16,7 +16,7 @@ DEFAULT_TASK_TIMEOUT = 1200
 DEFAULT_RUN_TIMEOUT = 1800
 DEFAULT_RECOVERY_TIMEOUT = 10
 
-TASK_KEY_CHOICES = ("search", "hashtag", "featured_goods")
+TASK_KEY_CHOICES = ("search", "hashtag", "featured_goods", "immersive")
 
 
 def _env_flag(name, default=False):
@@ -127,7 +127,7 @@ def build_ocr_arg_parser():
         "--task",
         choices=TASK_KEY_CHOICES,
         default=None,
-        help="只执行指定注册任务类型（search/hashtag/featured_goods）；"
+        help="只执行指定注册任务类型（search/hashtag/featured_goods/immersive）；"
              "默认不限定，扫描全部已注册任务",
     )
     parser.add_argument(

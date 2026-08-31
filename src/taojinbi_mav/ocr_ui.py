@@ -72,6 +72,7 @@ TASK_KEYS = {
     "search": "search_discovery",
     "hashtag": "hashtag_browse",
     "featured_goods": "featured_goods",
+    "immersive": "immersive_goods",
 }
 UNKNOWN_TASK_LABEL = "未知任务"
 # dry-run 行判定稳定 reason 优先级（external → unsafe → unsupported → desc →
@@ -276,10 +277,17 @@ def _read_progress_pair(text):
 
 
 def _is_reward_text(text):
-    """奖励数值不是可证明任务类型的描述证据。"""
+    """奖励数值不是可证明任务类型的描述证据。
+
+    仅当文本整体仅由货币字符/加减符号/数字/空白组成时才视为 reward；
+    任何汉字都意味着这是“描述 + 奖励数字”合并段（如 OCR 误读出
+    “浏览(+35”、“签到+50”），不能整段当 reward 排除。
+    """
+    if not text:
+        return False
     return (
         REWARD_RE.match(text) is not None
-        or re.search(r"[+＋]\s*\d", text) is not None
+        and re.fullmatch(r"[\s币金币+＋\-\d]+", text) is not None
     )
 
 
@@ -617,6 +625,31 @@ def is_product_detail_page(spans):
         for span in spans
         for anchor in PRODUCT_DETAIL_ANCHORS
     )
+
+
+# 淘宝首页特征：顶部 tab 锚点（关注/推荐/闪购 等至少 2 个命中）+ 底栏导航（视频/消息/购物车/我的淘宝 至少 2 个命中）。
+# "领淘金币"图标作为强信号加分（用于自动导航到淘金币根页），但不是必须
+# （弹窗/子页可能遮挡首页 tab）。
+TAOBAO_HOME_TAB_ANCHORS = ("关注", "推荐", "闪购", "盒马", "国补", "飞猪")
+TAOBAO_HOME_FOOTER_ANCHORS = ("视频", "消息", "购物车", "我的淘宝")
+COIN_ENTRY_BUTTON = "领淘金币"
+
+
+def is_taobao_home_page(spans):
+    """是否在淘宝首页（不是淘金币根页，不是子页/详情页）：顶 tab + 底栏双命中。
+
+    返回 (is_home, has_coin_entry)：has_coin_entry 为 True 时表示屏幕上
+    能看到"领淘金币"图标，可作为自动导航到淘金币根页的入口。
+    """
+    if not spans:
+        return False, False
+    texts = [span.text for span in spans]
+    tab_hits = sum(1 for tab in TAOBAO_HOME_TAB_ANCHORS if any(tab in t for t in texts))
+    footer_hits = sum(1 for anchor in TAOBAO_HOME_FOOTER_ANCHORS if any(anchor == t for t in texts))
+    has_coin_entry = COIN_ENTRY_BUTTON in texts
+    # 双命中：顶 tab ≥ 2 AND 底栏 ≥ 2 → 强信号是首页
+    # 单命中：仅靠"领淘金币"图标，可能在弹窗/子页也露出（弱信号，不视为首页）
+    return (tab_hits >= 2 and footer_hits >= 2), has_coin_entry
 
 
 def find_result_product_candidates(spans, screen_size,

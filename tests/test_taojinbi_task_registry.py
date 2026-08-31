@@ -115,10 +115,10 @@ class HashtagTaskProfileTests(unittest.TestCase):
 
 
 class FeaturedGoodsTaskProfileTests(unittest.TestCase):
-    def test_final_registry_contains_exactly_three_profiles(self):
+    def test_final_registry_contains_exactly_four_profiles(self):
         self.assertEqual(
             tuple(profile.key for profile in registered_profiles()),
-            ("search", "hashtag", "featured_goods"),
+            ("search", "hashtag", "featured_goods", "immersive"),
         )
 
     def test_featured_goods_requires_exact_title_and_browse_description(self):
@@ -137,12 +137,34 @@ class FeaturedGoodsTaskProfileTests(unittest.TestCase):
             "酒店超抵日至高5%",
             "去省钱卡领红包",
             "淘金币充话费可抵钱",
-            "好物沉浸看",
             "逛逛金币加抵好货",
             "逛好店赚一大波金币",
         ):
             with self.subTest(title=title):
                 self.assertIsNone(profile_for_title(title))
+
+
+class ImmersiveGoodsTaskProfileTests(unittest.TestCase):
+    def test_immersive_registers_after_featured_goods(self):
+        self.assertEqual(
+            tuple(profile.key for profile in registered_profiles()[3:]),
+            ("immersive",),
+        )
+
+    def test_immersive_requires_exact_title_and_browse_description(self):
+        self.assertIsNone(profile_for_row("好物沉浸看", ""))
+        profile = profile_for_row("好物沉浸看", "浏览 +35")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.key, "immersive")
+        self.assertEqual(profile.strategy, "feed_browse")
+        self.assertTrue(profile.description_required)
+        self.assertTrue(profile.allow_dynamic_total)
+        self.assertFalse(profile.rotating_title)
+        self.assertIsNone(profile_for_row("好物沉浸看推荐", "浏览"))
+
+    def test_immersive_does_not_match_partial_titles(self):
+        self.assertIsNone(profile_for_title("好物沉浸看推荐"))
+        self.assertIsNone(profile_for_title("好沉浸看"))
 
 
 class SafeLabelTests(unittest.TestCase):

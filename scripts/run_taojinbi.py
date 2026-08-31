@@ -23,6 +23,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from taojinbi_mav.ocr_ui import (
+    COIN_ENTRY_BUTTON,
     TASK_KEYS,
     UNKNOWN_TASK_LABEL,
     find_immersive_progress,
@@ -34,6 +35,7 @@ from taojinbi_mav.ocr_ui import (
     is_safe_tap_point,
     is_search_entry_page,
     is_search_flow_page,
+    is_taobao_home_page,
     is_coin_task_product_page,
     is_search_result_feed,
     page_fingerprint,
@@ -997,6 +999,68 @@ def _is_coin_root_page(spans, screen_size):
     )
 
 
+def _navigate_home_to_coin_page(d, reader, screen, deadline=None):
+    """自动导航：淘宝首页 → 淘金币根页。
+
+    入口：ocr_screen 读屏 → is_taobao_home_page 强信号（顶 tab ≥ 2 + 底栏 ≥ 2）
+    → find_unique_ocr_span("领淘金币") → safe_tap → 等待"淘金币"根页身份合同
+    可见（顶部 y < 40% 有"淘金币"）。任何一步失败返回 False，**绝不盲点**。
+    非首页 / 不可识别"领淘金币"图标 / 进入淘金币失败：均视为 False，由
+    上层决定是否降级为 list_anchor_missing。
+    """
+    try:
+        max_attempts = ENTRY_VALIDATION_RETRIES + 1
+        for attempt in range(max_attempts):
+            _checkpoint(deadline)
+            spans = ocr_screen(d, reader)
+            if not in_taobao_and_safe(d, spans):
+                return False
+            is_home, has_coin_entry = is_taobao_home_page(spans)
+            if not is_home or not has_coin_entry:
+                # 弱信号（仅"领淘金币"图标）或非首页：不盲点
+                return False
+            entry = find_unique_ocr_span(spans, COIN_ENTRY_BUTTON)
+            _checkpoint(deadline)
+            if entry is None:
+                if attempt == max_attempts - 1:
+                    return False
+                _deadline_sleep(deadline, ENTRY_RETRY_DELAY)
+                continue
+            if not safe_tap(d, entry.center, screen):
+                return False
+            # 等待淘金币根页身份合同
+            loaded = retry_entry_validation(
+                lambda: _on_coin_root_after_navigation(d, reader, screen),
+                max_retries=ENTRY_VALIDATION_RETRIES,
+                retry_delay=ENTRY_RETRY_DELAY,
+                sleeper=lambda seconds: _deadline_sleep(deadline, seconds),
+                checkpoint=lambda: _checkpoint(deadline),
+            )
+            if loaded:
+                return True
+            if attempt >= max_attempts - 1:
+                return False
+            _deadline_sleep(deadline, ENTRY_RETRY_DELAY)
+        return False
+    except Exception:
+        return False
+
+
+def _on_coin_root_after_navigation(d, reader, screen):
+    """导航后的根页身份校验：safe + 顶部 40% 有'淘金币'锚点。
+
+    与 _reopen_task_popup 内的 _is_coin_root_page 重复提取是因为该 helper
+    还要被 retry_entry_validation 调用做二次校验，单独函数便于测试覆盖。
+    """
+    try:
+        spans = ocr_screen(d, reader)
+    except Exception:
+        return False
+    if not in_taobao_and_safe(d, spans):
+        return False
+    return _is_coin_root_page(spans, screen)
+
+
 def _reopen_task_popup(d, reader, screen, deadline=None):
     """在淘金币首页点击"赚更多金币"重新打开任务弹窗并等待列表锚点。
 
@@ -1390,11 +1454,22 @@ def _execute_scan(device, reader, max_tasks, logger, mode, task_key=None,
         _checkpoint(run_deadline)
         if not on_list:
             screen = device.window_size()
-            if not _reopen_task_popup(
+            # 1) 尝试从淘宝首页自动导航到淘金币根页（点"领淘金币"图标）
+            if _navigate_home_to_coin_page(
                 device, reader, screen, deadline=run_deadline
             ):
-                # 页面感知回退（用户原则：以当前界面为开始和结束）：只在已知
-                # 流程页按返回、站在淘金币根页面绝不越界；未知页面零动作。
+                # 已在淘金币根页：直接尝试打开弹窗
+                if not _reopen_task_popup(
+                    device, reader, screen, deadline=run_deadline
+                ):
+                    return RunOutcome(
+                        mode, RunStatus.STARTUP_FAILED, "list_anchor_missing"
+                    )
+            elif not _reopen_task_popup(
+                device, reader, screen, deadline=run_deadline
+            ):
+                # 2) 已在淘金币根页（_reopen_task_popup 失败可能因为按钮抖动）
+                # 走页面感知回退；只在已知流程页按返回，未知页面零动作
                 if not _safe_back_to_coin_page(
                     device, reader, deadline=run_deadline,
                     require_action=False,

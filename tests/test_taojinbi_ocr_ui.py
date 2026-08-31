@@ -30,6 +30,7 @@ from taojinbi_mav.ocr_ui import (
     is_search_entry_page,
     is_search_flow_page,
     is_search_result_feed,
+    is_taobao_home_page,
     is_coin_task_product_page,
     page_fingerprint,
     parse_browse_badge,
@@ -191,6 +192,72 @@ class IsSafeTapPointTests(unittest.TestCase):
     def test_rejects_out_of_horizontal_bounds(self):
         self.assertFalse(is_safe_tap_point((-5, 900), self.SCREEN))
         self.assertFalse(is_safe_tap_point((1100, 900), self.SCREEN))
+
+
+class IsTaobaoHomePageTests(unittest.TestCase):
+    """淘宝首页识别：顶 tab + 底栏双命中（强信号）。"""
+
+    def _raw_home(self):
+        return [
+            (box(80, 95), "关注", 0.95),
+            (box(200, 95), "推荐", 0.95),
+            (box(330, 95), "闪购", 0.9),
+            (box(70, 1880), "视频", 0.9),
+            (box(330, 1880), "消息", 0.9),
+            (box(540, 1880), "购物车", 0.9),
+            (box(870, 1880), "我的淘宝", 0.9),
+        ]
+
+    def _home(self):
+        return parse_ocr_spans(self._raw_home())
+
+    def test_strong_signal_detects_home_with_coin_entry(self):
+        spans = parse_ocr_spans(
+            self._raw_home() + [(box(290, 410), "领淘金币", 0.95)]
+        )
+        is_home, has_coin = is_taobao_home_page(spans)
+        self.assertTrue(is_home)
+        self.assertTrue(has_coin)
+
+    def test_strong_signal_detects_home_without_coin_entry(self):
+        spans = parse_ocr_spans(self._raw_home())
+        is_home, has_coin = is_taobao_home_page(spans)
+        self.assertTrue(is_home)
+        self.assertFalse(has_coin)
+
+    def test_weak_signal_only_coin_entry_is_not_home(self):
+        # 仅"领淘金币"图标在屏：可能为淘金币根页/其他子页，不视为首页
+        spans = parse_ocr_spans([(box(290, 410), "领淘金币", 0.95)])
+        is_home, has_coin = is_taobao_home_page(spans)
+        self.assertFalse(is_home)
+        self.assertTrue(has_coin)
+
+    def test_no_home_signals_returns_false(self):
+        spans = parse_ocr_spans(
+            [(box(290, 200), "淘金币", 0.99), (box(540, 597), "赚更多金币", 0.97)]
+        )
+        is_home, has_coin = is_taobao_home_page(spans)
+        self.assertFalse(is_home)
+        self.assertFalse(has_coin)
+
+    def test_empty_spans_returns_false(self):
+        is_home, has_coin = is_taobao_home_page(None)
+        self.assertFalse(is_home)
+        self.assertFalse(has_coin)
+
+    def test_only_one_tab_anchor_is_not_home(self):
+        # 顶 tab 只命中 1 个 + 底栏全命中：弱信号，视为非首页（可能是子页残影）
+        spans = parse_ocr_spans(
+            [
+                (box(80, 95), "关注", 0.95),
+                (box(70, 1880), "视频", 0.9),
+                (box(330, 1880), "消息", 0.9),
+                (box(540, 1880), "购物车", 0.9),
+                (box(870, 1880), "我的淘宝", 0.9),
+            ]
+        )
+        is_home, _ = is_taobao_home_page(spans)
+        self.assertFalse(is_home)
 
 
 class ScreenTextSignatureTests(unittest.TestCase):
@@ -366,15 +433,53 @@ class SafeBrowseTargetTests(unittest.TestCase):
             ("搜一搜你心仪的宝贝(0/6)", ""),
             ("看看#斯维诗鱼油(2/7)", ""),
             ("发现精选好物(1/4)", "浏览"),
+            # 真机 OCR：标题独立 + 副标题独立 + 奖励独立 + 按钮独立
+            ("好物沉浸看(1/3)", "浏览"),
         )
         for title, description in accepted:
             with self.subTest(title=title):
-                spans = parse_ocr_spans(
-                    self._row(300, title, desc=description)
-                )
+                if title.startswith("好物沉浸看"):
+                    spans = parse_ocr_spans(
+                        [
+                            (box(391, 300), title, 0.98),
+                            (box(327, 340), description, 0.9),
+                            (box(560, 340), "+35", 0.7),
+                            (box(943, 320), "去完成", 0.97),
+                        ]
+                    )
+                else:
+                    spans = parse_ocr_spans(
+                        self._row(300, title, desc=description)
+                    )
                 self.assertIsNotNone(
                     find_safe_browse_target(spans, self.SCREEN)
                 )
+
+    def test_immersive_goods_supports_dynamic_total(self):
+        spans = parse_ocr_spans(
+            [
+                (box(391, 300), "好物沉浸看(1/3)", 0.98),
+                (box(327, 340), "浏览", 0.9),
+                (box(560, 340), "+35", 0.7),
+                (box(943, 320), "去完成", 0.97),
+            ]
+        )
+        target = find_safe_browse_target(spans, self.SCREEN)
+        self.assertIsNotNone(target)
+        self.assertEqual(target.title, "好物沉浸看")
+        self.assertEqual(target.progress, 1)
+        self.assertEqual(target.total, 3)
+
+    def test_immersive_goods_rejected_without_browse_description(self):
+        spans = parse_ocr_spans(
+            [
+                (box(391, 300), "好物沉浸看(1/3)", 0.98),
+                (box(327, 340), "", 0.9),
+                (box(560, 340), "+35", 0.7),
+                (box(943, 320), "去完成", 0.97),
+            ]
+        )
+        self.assertIsNone(find_safe_browse_target(spans, self.SCREEN))
 
     def test_removed_and_unverified_task_families_are_rejected(self):
         removed = (
@@ -382,7 +487,6 @@ class SafeBrowseTargetTests(unittest.TestCase):
             "酒店超抵日至高5%(0/1)",
             "去省钱卡领红包(0/1)",
             "淘金币充话费可抵钱(0/1)",
-            "好物沉浸看(0/5)",
             "逛逛金币加抵好货(0/1)",
             "逛好店赚一大波金币(0/1)",
         )
@@ -476,12 +580,14 @@ class SafeBrowseTargetTests(unittest.TestCase):
         self.assertIsNone(find_safe_browse_target(spans, self.SCREEN))
 
     def test_featured_goods_reward_cannot_supply_browse_description(self):
+        # 故意把 reward 字段写成纯 reward 字符（含"币"），与 description 字段
+        # 区分开；description 字段留空，确保 reward 文本不会替代"浏览"被识别。
         spans = parse_ocr_spans(
             self._row(
                 300,
                 "发现精选好物(0/4)",
                 desc="",
-                reward="浏览 +50",
+                reward="币 +50",
             )
         )
         self.assertIsNone(find_safe_browse_target(spans, self.SCREEN))

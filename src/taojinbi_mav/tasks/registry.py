@@ -1,9 +1,15 @@
 from .featured_goods import FEATURED_GOODS_TASK
 from .hashtag import HASHTAG_TASK
+from .immersive import IMMERSIVE_GOODS_TASK
 from .search import SEARCH_TASK
 
 
-_PROFILES = (SEARCH_TASK, HASHTAG_TASK, FEATURED_GOODS_TASK)
+_PROFILES = (
+    SEARCH_TASK,
+    HASHTAG_TASK,
+    FEATURED_GOODS_TASK,
+    IMMERSIVE_GOODS_TASK,
+)
 
 
 def registered_profiles():
