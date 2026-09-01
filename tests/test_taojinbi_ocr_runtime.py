@@ -2798,6 +2798,54 @@ class TaskEventLoggingTests(unittest.TestCase):
         self.assertEqual(finished[0][1]["status"], "likely_completed")
         self.assertEqual(finished[0][1]["reason"], "progress_total_mismatch")
 
+    def test_no_safe_control_after_browse_is_likely_completed(self):
+        # _safe_back 失败但已浏览+读到过进度：浏览实际发生（金币通常到账），
+        # 真机 2026-09-01 证实（看看# 1 步 _safe_back 失败但余额 +50）
+        result = ImmersiveRunResult(
+            completed=False, progress=1, successful_steps=1,
+            reason="no_safe_control",
+            transitions=((0, 1),),
+        )
+        logger = self._run(result)
+        finished = [e for e in logger.events if e[0] == "task_finished"]
+        self.assertEqual(finished[0][1]["status"], "likely_completed")
+        self.assertEqual(finished[0][1]["reason"], "no_safe_control")
+
+    def test_no_safe_control_without_browse_stays_unfinished(self):
+        # _safe_control 失败但 browsed=False：真没浏览过，不谎报
+        logger, device, reader, target, _result = self._build()
+        result = ImmersiveRunResult(
+            completed=False, progress=0, successful_steps=0,
+            reason="no_safe_control", transitions=(),
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                runtime, "locate_safe_browse_target", return_value=target,
+            ))
+            stack.enter_context(patch.object(
+                runtime, "run_one_safe_browse_task",
+                return_value=(result, False),   # browsed=False
+            ))
+            runtime.run_safe_browse_tasks(
+                device, reader, max_tasks=1, logger=logger,
+            )
+        finished = [e for e in logger.events if e[0] == "task_finished"]
+        self.assertEqual(finished[0][1]["status"], "unfinished")
+        self.assertEqual(finished[0][1]["reason"], "no_safe_control")
+
+    def test_search_result_unavailable_after_browse_is_likely_completed(self):
+        # 点击搜索发现关键词但 OCR 漏读结果页：浏览实际发生（淘宝自动计时），
+        # 真机 2026-09-01 证实（search 0/5 触发该 reason 但余额 +100）
+        result = ImmersiveRunResult(
+            completed=False, progress=1, successful_steps=1,
+            reason="search_result_unavailable",
+            transitions=((0, 1),),
+        )
+        logger = self._run(result)
+        finished = [e for e in logger.events if e[0] == "task_finished"]
+        self.assertEqual(finished[0][1]["status"], "likely_completed")
+        self.assertEqual(finished[0][1]["reason"], "search_result_unavailable")
+
     def test_finished_completed_status_for_confirmed_result(self):
         logger = self._run(
             ImmersiveRunResult(

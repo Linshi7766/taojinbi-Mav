@@ -1381,6 +1381,20 @@ def run_safe_browse_tasks(d, reader, max_tasks=8, run_deadline=None,
                 # 已浏览且读到过进度：与 task_row_unobserved 同口径"很可能完成"。
                 likely_done.append(label)
                 task_status = "likely_completed"
+            elif (result.reason == "no_safe_control" and browsed
+                  and getattr(result, "progress", 0) > 0):
+                # _safe_back 失败或 perform_one 收尾失败，但已浏览且读到过进度：
+                # 浏览实际发生（金币通常已到账），与 task_row_unobserved 同口径
+                # "很可能完成"。真机 2026-09-01 证实：_safe_back 失败但余额已涨。
+                likely_done.append(label)
+                task_status = "likely_completed"
+            elif (result.reason == "search_result_unavailable" and browsed):
+                # 点击了搜索发现关键词但 OCR 连续漏读结果页锚点：浏览实际发生
+                # （淘宝搜索结果页自动计时），金币很可能到账；与 missing_progress
+                # +browsed 同口径"很可能完成"。真机 2026-09-01 证实：search 0/5
+                # 触发 search_result_unavailable 但实际到账 +100。
+                likely_done.append(label)
+                task_status = "likely_completed"
             else:
                 unfinished.append(f"{label}({result.reason})")
                 task_status = "unfinished"
