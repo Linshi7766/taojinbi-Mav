@@ -58,6 +58,13 @@ SEARCH_NOISE_MARKERS = (
 )
 # 商品详情页锦点（仅用于识别“已进详情”，绝不点击这些按钮）
 PRODUCT_DETAIL_ANCHORS = ("加入购物车", "立即购买", "领券购买")
+# 每日签到弹窗：每天首次打开“赚淘金币”页面时先于任务弹窗弹出（真机
+# 2026-09-01 用户反馈：每日签到 +130 金币）。签到弹窗会遮挡任务列表，
+# 脚本必须能识别并在继续任务流程前处理掉。
+CHECKIN_POPUP_MARKERS = ("签到",)
+# 签到弹窗的领取按钮文案（按优先级匹配，首个精确唯一命中即点）
+# 待真机校准（用户 9/2 首开取样后确认实际文案）
+CHECKIN_CLAIM_WORDS = ("立即领取", "签到领币", "领取奖励", "领取")
 # 结果页里不是商品标题的噪声（奖励条/搜索框/促销标签等，点了进不了详情）
 RESULT_TILE_NOISE = (
     "搜索", "可领", "浏览", "淘金币", "金币", "已抵", "立减", "下单",
@@ -640,6 +647,36 @@ def is_product_detail_page(spans):
         for span in spans
         for anchor in PRODUCT_DETAIL_ANCHORS
     )
+
+
+def is_daily_checkin_popup(spans):
+    """是否停在每日签到弹窗（每天首次打开赚淘金币页面时先于任务弹窗弹出）。
+
+    命中特征：屏上存在“签到”字样。仅识别不操作——是否领取、点哪个按钮由
+    上层 find_checkin_claim_button + safe_tap 决定。
+    """
+    return any(
+        marker in span.text
+        for span in spans or []
+        for marker in CHECKIN_POPUP_MARKERS
+    )
+
+
+def find_checkin_claim_button(spans, min_confidence=0.5):
+    """找签到弹窗的领取按钮：按 CHECKIN_CLAIM_WORDS 优先级取首个**精确唯一**命中。
+
+    歧义（同屏多个相同文案）返回 None —— 绝不猜测、绝不盲点。
+    """
+    for word in CHECKIN_CLAIM_WORDS:
+        candidates = [
+            span
+            for span in spans or []
+            if span.text.strip() == word
+            and span.confidence >= min_confidence
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
 
 
 # 淘宝首页特征：顶部 tab 锚点（关注/推荐/闪购 等至少 2 个命中）+ 底栏导航（视频/消息/购物车/我的淘宝 至少 2 个命中）。

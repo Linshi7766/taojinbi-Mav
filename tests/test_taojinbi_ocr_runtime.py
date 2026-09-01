@@ -2489,6 +2489,63 @@ class SafeBackToCoinPageTests(unittest.TestCase):
         self.assertEqual(device.press_count, 0)
 
 
+class DailyCheckinHandlerTests(unittest.TestCase):
+    """_handle_daily_checkin：有签到弹窗则领取，无则跳过，识别失败不盲点。"""
+
+    def test_claims_when_checkin_popup_present(self):
+        # 签到弹窗 + 唯一"立即领取" → 点击 → 等弹窗消失 → True
+        checkin = [
+            (_box(540, 600), "每日签到", 0.98),
+            (_box(540, 900), "立即领取", 0.97),
+        ]
+        settled = [
+            (_box(540, 300), "淘金币", 0.99),
+            (_box(540, 597), "赚更多金币", 0.97),
+        ]
+        reader = _SequenceReader([checkin, settled, settled])
+        device = _ActionDevice()
+        result = runtime._handle_daily_checkin(device, reader)
+        self.assertTrue(result)
+        self.assertEqual(device.tap_count, 1)
+        self.assertEqual(device.last_tap, (540, 900))
+
+    def test_skips_when_no_checkin_popup(self):
+        # 无签到弹窗：正常跳过，零点击
+        spans = [
+            (_box(540, 300), "淘金币", 0.99),
+            (_box(540, 597), "赚更多金币", 0.97),
+        ]
+        reader = _SequenceReader([spans])
+        device = _ActionDevice()
+        self.assertTrue(runtime._handle_daily_checkin(device, reader))
+        self.assertEqual(device.tap_count, 0)
+
+    def test_ambiguous_claim_button_returns_false_without_tap(self):
+        # 同屏两个"领取"歧义 → 不盲点 → False（签到不阻塞但也不误领）
+        spans = [
+            (_box(540, 600), "每日签到", 0.98),
+            (_box(300, 900), "领取", 0.97),
+            (_box(700, 900), "领取", 0.96),
+        ]
+        reader = _SequenceReader([spans, spans, spans])
+        device = _ActionDevice()
+        result = runtime._handle_daily_checkin(device, reader)
+        self.assertFalse(result)
+        self.assertEqual(device.tap_count, 0)
+
+    def test_low_confidence_claim_button_returns_false(self):
+        # 领取按钮置信度过低（< 0.5）→ find_checkin_claim_button 拒绝 → False
+        spans = [
+            (_box(540, 600), "每日签到", 0.98),
+            (_box(540, 900), "立即领取", 0.4),
+        ]
+        reader = _SequenceReader([spans, spans, spans])
+        device = _ActionDevice()
+        result = runtime._handle_daily_checkin(device, reader)
+        self.assertFalse(result)
+        self.assertEqual(device.tap_count, 0)
+
+
 class NavigateHomeToCoinPageTests(unittest.TestCase):
     """_navigate_home_to_coin_page：淘宝首页 → 淘金币根页自动导航。"""
 

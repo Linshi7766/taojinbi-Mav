@@ -32,6 +32,8 @@ from taojinbi_mav.ocr_ui import (
     is_search_result_feed,
     is_taobao_home_page,
     is_coin_task_product_page,
+    is_daily_checkin_popup,
+    find_checkin_claim_button,
     page_fingerprint,
     parse_browse_badge,
     locate_by_scroll,
@@ -192,6 +194,82 @@ class IsSafeTapPointTests(unittest.TestCase):
     def test_rejects_out_of_horizontal_bounds(self):
         self.assertFalse(is_safe_tap_point((-5, 900), self.SCREEN))
         self.assertFalse(is_safe_tap_point((1100, 900), self.SCREEN))
+
+
+class DailyCheckinPopupTests(unittest.TestCase):
+    """每日签到弹窗识别（真机 2026-09-01：每日首次打开赚淘金币先弹签到）。"""
+
+    def test_detects_checkin_popup_by_marker(self):
+        spans = parse_ocr_spans(
+            [
+                (box(540, 600), "每日签到", 0.98),
+                (box(540, 900), "立即领取", 0.97),
+            ]
+        )
+        self.assertTrue(is_daily_checkin_popup(spans))
+
+    def test_task_popup_is_not_checkin_popup(self):
+        # 任务弹窗（赚金币抵钱）不含"签到"字样：必须不误判为签到弹窗
+        spans = parse_ocr_spans(
+            [
+                (box(414, 1014), "发现精选好物(1/3)", 0.91),
+                (box(327, 1077), "浏览(+35", 0.65),
+                (box(943, 1047), "去完成", 0.98),
+            ]
+        )
+        self.assertFalse(is_daily_checkin_popup(spans))
+
+    def test_empty_spans_is_not_checkin_popup(self):
+        self.assertFalse(is_daily_checkin_popup(None))
+        self.assertFalse(is_daily_checkin_popup([]))
+
+    def test_finds_unique_claim_button(self):
+        spans = parse_ocr_spans(
+            [
+                (box(540, 600), "每日签到", 0.98),
+                (box(540, 900), "立即领取", 0.97),
+            ]
+        )
+        claim = find_checkin_claim_button(spans)
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.text, "立即领取")
+
+    def test_ambiguous_claim_button_returns_none(self):
+        # 同屏两个"领取"：歧义 → 零点击（绝不猜测）
+        spans = parse_ocr_spans(
+            [
+                (box(540, 600), "每日签到", 0.98),
+                (box(300, 900), "领取", 0.97),
+                (box(700, 900), "领取", 0.96),
+            ]
+        )
+        self.assertIsNone(find_checkin_claim_button(spans))
+
+    def test_claim_word_priority_prefers_specific_button(self):
+        # 同时存在"立即领取"与"领取"：按 CHECKIN_CLAIM_WORDS 优先级取前者
+        spans = parse_ocr_spans(
+            [
+                (box(540, 600), "每日签到", 0.98),
+                (box(700, 900), "领取", 0.96),
+                (box(300, 900), "立即领取", 0.97),
+            ]
+        )
+        claim = find_checkin_claim_button(spans)
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.text, "立即领取")
+
+    def test_low_confidence_claim_button_is_skipped(self):
+        spans = parse_ocr_spans(
+            [
+                (box(540, 600), "每日签到", 0.98),
+                (box(540, 900), "立即领取", 0.4),
+            ]
+        )
+        self.assertIsNone(find_checkin_claim_button(spans))
+
+    def test_no_claim_button_returns_none(self):
+        spans = parse_ocr_spans([(box(540, 600), "每日签到", 0.98)])
+        self.assertIsNone(find_checkin_claim_button(spans))
 
 
 class IsTaobaoHomePageTests(unittest.TestCase):

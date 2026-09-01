@@ -31,6 +31,8 @@ from taojinbi_mav.ocr_ui import (
     find_safe_browse_target,
     find_unique_ocr_span,
     inspect_visible_task_rows,
+    find_checkin_claim_button,
+    is_daily_checkin_popup,
     is_product_detail_page,
     is_safe_tap_point,
     is_search_entry_page,
@@ -999,6 +1001,71 @@ def _is_coin_root_page(spans, screen_size):
     )
 
 
+def _checkin_popup_gone(d, reader):
+    """签到弹窗是否已消失（重新读屏校验，不复用旧帧）。"""
+    try:
+        spans = ocr_screen(d, reader)
+    except Exception:
+        return False
+    if not in_taobao_and_safe(d, spans):
+        return False
+    return not is_daily_checkin_popup(spans)
+
+
+def _handle_daily_checkin(d, reader, deadline=None):
+    """处理每日签到弹窗：检测 → 找领取按钮 → safe_tap → 等弹窗消失。
+
+    真机 2026-09-01 用户反馈：每天首次打开“赚淘金币”页面会先弹每日签到
+    弹窗（+130 金币），该弹窗遮挡任务列表，会让后续 on_task_list 判定失败、
+    “赚更多金币”按钮不可见，最终 list_anchor_missing 启动失败。
+
+    安全约束（与既有入口动作一致）：
+    - 每步先 in_taobao_and_safe，不安全立即失败关闭；
+    - 领取按钮必须 find_unique_ocr_span 精确唯一（歧义零点击）；
+    - 坐标经 safe_tap 安全区校验；
+    - 点击后重新读屏验证弹窗消失，不假设成功。
+
+    **失败不阻塞**：签到是锦上添花而非主流程，返回 False 时上层继续走
+    后续导航/任务流程，绝不因此中断整次运行。无签到弹窗时返回 True。
+    """
+    try:
+        max_attempts = ENTRY_VALIDATION_RETRIES + 1
+        for attempt in range(max_attempts):
+            _checkpoint(deadline)
+            spans = ocr_screen(d, reader)
+            if not in_taobao_and_safe(d, spans):
+                return False
+            if not is_daily_checkin_popup(spans):
+                return True   # 无签到弹窗：无需处理（正常路径）
+            claim = find_checkin_claim_button(spans)
+            _checkpoint(deadline)
+            if claim is None:
+                if attempt == max_attempts - 1:
+                    return False
+                _deadline_sleep(deadline, ENTRY_RETRY_DELAY)
+                continue
+            # 仅确认要点时才取屏幕尺寸（延迟取：无签到弹窗时零额外依赖）
+            screen = d.window_size()
+            if not safe_tap(d, claim.center, screen):
+                return False
+            _deadline_sleep(deadline, SWIPE_SETTLE)
+            gone = retry_entry_validation(
+                lambda: _checkin_popup_gone(d, reader),
+                max_retries=ENTRY_VALIDATION_RETRIES,
+                retry_delay=ENTRY_RETRY_DELAY,
+                sleeper=lambda seconds: _deadline_sleep(deadline, seconds),
+                checkpoint=lambda: _checkpoint(deadline),
+            )
+            if gone:
+                return True
+            if attempt >= max_attempts - 1:
+                return False
+            _deadline_sleep(deadline, ENTRY_RETRY_DELAY)
+        return False
+    except Exception:
+        return False
+
+
 def _navigate_home_to_coin_page(d, reader, screen, deadline=None):
     """自动导航：淘宝首页 → 淘金币根页。
 
@@ -1449,6 +1516,11 @@ def _execute_scan(device, reader, max_tasks, logger, mode, task_key=None,
     clock = getattr(run_deadline, "clock", time.monotonic)
     sleeper = getattr(run_deadline, "sleeper", time.sleep)
     try:
+        _checkpoint(run_deadline)
+        # 0) 每日签到弹窗：每天首次打开“赚淘金币”页面会先弹（真机 2026-09-01
+        # 反馈），遮挡任务列表会让后续导航全部失败。先处理掉再判断任务列表；
+        # 签到失败不阻塞，继续走后续导航与任务流程。
+        _handle_daily_checkin(device, reader, deadline=run_deadline)
         _checkpoint(run_deadline)
         on_list = on_task_list(device, reader)
         _checkpoint(run_deadline)
