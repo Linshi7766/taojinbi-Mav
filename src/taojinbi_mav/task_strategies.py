@@ -94,16 +94,32 @@ class StrategyContext:
         self._raw_sleep(seconds)
         self.checkpoint()
 
+    def _last_moment_package_safe(self):
+        """动作前最后一刻包名确认（Codex 审计 P0-2，2026-09-02）。
+
+        等待/浏览期间前台可能被切到第三方应用；package_is_safe 为
+        None（旧调用方未注入）时保持原行为，否则非淘宝立即拒绝。
+        """
+        if self.package_is_safe is None:
+            return True
+        return bool(self.package_is_safe())
+
     def _checked_swipe(self, *args):
         self.checkpoint()
+        if not self._last_moment_package_safe():
+            return False
         return self._raw_swipe(*args)
 
     def _checked_back(self):
         self.checkpoint()
+        if not self._last_moment_package_safe():
+            return False
         return self._raw_back()
 
     def _checked_safe_tap(self, center):
         self.checkpoint()
+        if not self._last_moment_package_safe():
+            return False
         return self._raw_safe_tap(center)
 
 

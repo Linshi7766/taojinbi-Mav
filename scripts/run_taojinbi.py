@@ -95,6 +95,10 @@ ENTRY_RETRY_DELAY = 0.5       # 重试前短暂等待页面稳定
 
 
 REFRESH_RECOVERY_ATTEMPTS = 2
+# 收尾回退的动作预算（秒）：_run_entry finally 的收尾即使超时也只允许
+# 在此预算内产生设备动作，之后必须停（Codex 审计 P0-1 后半，2026-09-02：
+# 超时后不应再产生无限期动作）。2 次 back + sleep + OCR 时间足够。
+SETTLE_BUDGET_S = 15
 COIN_PAGE_ANCHOR = "淘金币"
 MORE_COINS_ACTION = "赚更多金币"
 POPUP_CLOSE_CONTROL = "更多"   # 任务弹窗右上角关闭控件（OCR 可读，真机 2026-08-29 用户演示验证）
@@ -211,12 +215,21 @@ def in_taobao_and_safe(d, spans):
 
 
 def safe_tap(d, center, screen_size):
-    """仅在坐标落于安全区时点击；坐标从 OCR 边界框动态得来，不写死。
+    """仅在坐标落于安全区且前台仍是淘宝时点击；坐标动态得来，不写死。
 
-    失败原因用稳定标识 action_point_outside_safe_area，绝不打印坐标。
+    最后一刻包名确认（Codex 审计 P0-2，2026-09-02）：从 OCR 定位到实际
+    点击之间前台可能被切走；非淘宝立即拒绝（fail-closed）。
+    失败原因用稳定标识，绝不打印坐标。
     """
     if not is_safe_tap_point(center, screen_size):
         print("安全点击失败：action_point_outside_safe_area")
+        return False
+    try:
+        if current_package(d) != TB_APP:
+            print("安全点击失败：package_not_taobao_at_action_time")
+            return False
+    except Exception:
+        print("安全点击失败：package_check_unavailable")
         return False
     d.click(center[0], center[1])
     return True
@@ -1709,8 +1722,15 @@ def _run_entry(mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
         # 用户 2026-09-02：执行完必须退出到初始界面（淘金币根页），
         # 不因成功/超时/异常停在中间页/商品流。尽力而为：失败不覆盖
         # 原始 outcome/退出码，也不输出异常正文。
+        # 收尾有独立动作预算（SETTLE_BUDGET_S）：超时后不再无限期动作
+        # （Codex 审计 P0-1 后半）。
         try:
-            _settle_back_to_coin_page(device, ocr_reader, deadline=None)
+            settle_deadline = Deadline.after(
+                SETTLE_BUDGET_S, scope="settle", clock=clock, sleeper=sleeper,
+            )
+            _settle_back_to_coin_page(
+                device, ocr_reader, deadline=settle_deadline
+            )
         except Exception:
             pass
 

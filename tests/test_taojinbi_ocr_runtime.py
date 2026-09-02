@@ -1894,7 +1894,8 @@ class ExecuteDeadlineTests(unittest.TestCase):
 
     def test_run_entry_finally_settles_back_to_coin_page(self):
         # 用户 2026-09-02：执行完（含超时/异常路径）必须退出到初始界面——
-        # _run_entry 的 finally 必须调用收尾回退
+        # _run_entry 的 finally 必须调用收尾回退；且收尾带独立动作预算
+        # （scope="settle"，Codex 审计 P0-1 后半：超时后不无限期动作）
         clock = FakeClock()
         sleeper = FakeSleeper(clock)
         device = RecordingDeadlineDevice(clock)
@@ -1903,7 +1904,10 @@ class ExecuteDeadlineTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.object(
                 runtime, "_settle_back_to_coin_page",
-                side_effect=lambda *_a, **_k: called.setdefault("settled", True),
+                side_effect=lambda _d, _r, deadline=None: (
+                    called.setdefault("settled", True),
+                    called.setdefault("deadline", deadline),
+                ),
             ))
             runtime.run_ocr_entry(
                 serial="test-device",
@@ -1918,6 +1922,9 @@ class ExecuteDeadlineTests(unittest.TestCase):
                 sleeper=sleeper,
             )
         self.assertTrue(called.get("settled"))
+        settle_deadline = called.get("deadline")
+        self.assertIsNotNone(settle_deadline)
+        self.assertEqual(settle_deadline.scope, "settle")
 
     def test_total_deadline_includes_target_location(self):
         # 列表锚点在屏、但无已注册任务：定位阶段滚动把总时限耗尽，

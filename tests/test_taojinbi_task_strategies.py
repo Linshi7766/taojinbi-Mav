@@ -59,8 +59,57 @@ class GestureDevice:
     def swipe(self, *args):
         self.swipes.append(args)
 
+    def press(self, *args):
+        self.backs.append(args)
+
     def click(self, *_args):
         raise AssertionError("feed browse must not click page content")
+
+
+class LastMomentPackageGuardTests(unittest.TestCase):
+    """P0-2（Codex 审计 2026-09-02）：动作前最后一刻包名确认。
+
+    等待/浏览期间前台可能被切走；tap/swipe/back 必须在动作瞬间重新
+    确认包名，非淘宝立即拒绝（fail-closed），绝不落到第三方界面。
+    """
+
+    def _context(self, device, package_is_safe):
+        return strategies.StrategyContext(
+            device=device,
+            reader=None,
+            screen=(1080, 1920),
+            read_screen=lambda: [],
+            screen_is_safe=lambda _spans: True,
+            package_is_safe=package_is_safe,
+            safe_tap=lambda _center: True,
+        )
+
+    def test_swipe_rejected_when_package_left_taobao(self):
+        device = GestureDevice()
+        context = self._context(device, package_is_safe=lambda: False)
+        result = strategies.execute_task_strategy(
+            strategies.FEED_BROWSE, context, 3
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(device.swipes, [])
+
+    def test_back_rejected_when_package_left_taobao(self):
+        device = GestureDevice()
+        context = self._context(device, package_is_safe=lambda: False)
+        context.back()
+        self.assertEqual(device.backs, [])
+
+    def test_swipe_allowed_when_package_safe(self):
+        device = GestureDevice()
+        context = self._context(device, package_is_safe=lambda: True)
+        context.swipe(540, 1400, 540, 600, 0.4)
+        self.assertEqual(len(device.swipes), 1)
+
+    def test_back_allowed_when_package_safe(self):
+        device = GestureDevice()
+        context = self._context(device, package_is_safe=lambda: True)
+        context.back()
+        self.assertEqual(len(device.backs), 1)
 
 
 class FeedBrowseStrategyTests(unittest.TestCase):
@@ -86,16 +135,18 @@ class FeedBrowseStrategyTests(unittest.TestCase):
         self.assertTrue(all(swipe[1] > swipe[3] for swipe in device.swipes))
 
     def test_feed_strategy_stops_before_next_swipe_when_package_is_unsafe(self):
+        # P0-2（Codex 审计 2026-09-02）：等待期间切走 → 最后一刻包名确认
+        # 拒绝滑动（swipes 0 而非 1）——比旧行为更安全
         device = GestureDevice()
         checks = iter([True, False])
         with patch.object(strategies.time, "sleep"):
             result = strategies.execute_task_strategy(
                 strategies.FEED_BROWSE,
-                self._context(device, lambda: next(checks)),
+                self._context(device, lambda: next(checks, False)),
                 3,
             )
         self.assertEqual(result.reason, "unsafe_package")
-        self.assertEqual(len(device.swipes), 1)
+        self.assertEqual(len(device.swipes), 0)
 
     def test_feed_strategy_follows_badge_until_confirmed_absent(self):
         """feed 徽标驱动：徽标可见时持续停留滑动，连续消失 2 次即收。
