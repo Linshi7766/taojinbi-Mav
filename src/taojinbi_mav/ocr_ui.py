@@ -836,19 +836,32 @@ def revalidate_discovery_candidate(original, fresh_spans, screen_size):
     相似度（>=0.8）而非严格相等；位置容差为屏宽 12%（抗轻微位移/动画）。
     返回第二帧新坐标（不复用第一帧旧坐标）；消失、歧义、移位过大、
     坐标不安全均返回 None。
+
+    歧义处理（真机 2026-09-02 修复）："历史搜索"区与"搜索发现"区会出现
+    同一关键词（如"杯子"），全局文本匹配必然歧义 → 误零点击 → 整轮
+    search_result_unavailable。修复：先按位置容差过滤出原位置附近的匹配
+    （区域内重定位），区域内唯一则采用；区域内也歧义/全无附近匹配时才
+    回退全局判定，仍歧义则零点击。
     """
     width, _height = screen_size
     max_shift = width * _REVALIDATE_SHIFT_RATIO
     norm = _normalize_ocr_text(original.text)
     if not norm:
         return None
-    candidates = [
+    matches = [
         s for s in fresh_spans
         if SequenceMatcher(None, norm, _normalize_ocr_text(s.text)).ratio() >= 0.8
     ]
-    if len(candidates) != 1:
-        return None  # 消失或歧义（无匹配 / 多条近似）
-    fresh = candidates[0]
+    near = [
+        s for s in matches
+        if abs(s.center[0] - original.center[0]) <= max_shift
+        and abs(s.center[1] - original.center[1]) <= max_shift
+    ]
+    if len(near) == 1:
+        matches = near
+    elif len(matches) != 1:
+        return None  # 区域内歧义或全局歧义：零点击
+    fresh = matches[0]
     if (abs(fresh.center[0] - original.center[0]) > max_shift
             or abs(fresh.center[1] - original.center[1]) > max_shift):
         return None  # 移位过大

@@ -1455,8 +1455,10 @@ class DiscoveryTwoFrameSafetyTests(unittest.TestCase):
 
     def test_revalidate_none_when_ambiguous(self):
         original = self._candidate()
+        # 两个同词都在原位置 ±12% 屏宽容差内（区域内真歧义）→ 零点击；
+        # 远处重复词（如历史搜索区）不算歧义（2026-09-02 语义：区域内重定位）
         dup = OcrSpan("鱼油推荐", 0.9, (300, 700), (200, 680, 400, 720))
-        dup2 = OcrSpan("鱼油推荐", 0.9, (600, 700), (500, 680, 700, 720))
+        dup2 = OcrSpan("鱼油推荐", 0.9, (320, 700), (220, 680, 420, 720))
         self.assertIsNone(
             ocr_ui.revalidate_discovery_candidate(
                 original, [dup, dup2], self.SCREEN
@@ -1496,6 +1498,30 @@ class DiscoveryTwoFrameSafetyTests(unittest.TestCase):
         )
         self.assertIsNotNone(result)
         self.assertEqual(result.center, (300, 700))
+
+    def test_revalidate_prefers_nearby_match_on_global_duplicate(self):
+        # 真机 2026-09-02："历史搜索"区(193,514)与"搜索发现"区(242,1013)
+        # 同时出现"杯子"，全局文本匹配歧义 → 必须按位置选区域内匹配，
+        # 否则整轮 search_result_unavailable（不是限流，是重复词歧义）
+        original = self._candidate(text="杯子", center=(242, 1013))
+        history = OcrSpan("杯子", 0.9, (193, 514), (140, 494, 246, 534))
+        discovery = OcrSpan("杯子", 0.9, (242, 1013), (189, 993, 295, 1033))
+        result = ocr_ui.revalidate_discovery_candidate(
+            original, [history, discovery], self.SCREEN
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.center, (242, 1013))
+
+    def test_revalidate_still_returns_none_when_nearby_ambiguous(self):
+        # 区域内（±12% 屏宽）仍有两个同词 → 真歧义 → 零点击
+        original = self._candidate(text="杯子", center=(242, 1013))
+        dup1 = OcrSpan("杯子", 0.9, (200, 1013), (147, 993, 253, 1033))
+        dup2 = OcrSpan("杯子", 0.9, (330, 1013), (277, 993, 383, 1033))
+        self.assertIsNone(
+            ocr_ui.revalidate_discovery_candidate(
+                original, [dup1, dup2], self.SCREEN
+            )
+        )
 
     def test_scaled_resolution_judges_consistently(self):
         # 等比缩放 2 倍（2160x3840）：同一布局判定一致（候选仍在第一行）
