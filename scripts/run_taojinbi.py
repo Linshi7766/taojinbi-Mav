@@ -1254,7 +1254,10 @@ def _safe_back_to_coin_page(d, reader, max_backs=MAX_BACKS, deadline=None,
     - 淘金币标题可见 = 任务生态的根：赚更多金币可见即成功；被遮挡（如奖励
       卡片）时**原地失败**，绝不站在根页面上按返回（防止过冲到淘宝首页）；
     - 已知任务流程页（弹窗列表/商品详情/搜索发现/搜索结果）：按一次返回；
-    - 其他未知页面或非淘宝/OCR 不可用：原地失败，不按返回。
+    - 未知页面（活动页/频道页/商品页变体）：用户 2026-09-02 要求"执行完
+      必须退出到初始界面，别停在中间页"——改为有界按返回试探：仍在淘宝内
+      则继续回退，直到到达根页或耗尽次数。非淘宝/到达根页由循环首部
+      （in_taobao_and_safe + 淘金币锚点）兜底，绝不越界。
     """
     if screen is None:
         screen = d.window_size()
@@ -1286,7 +1289,13 @@ def _safe_back_to_coin_page(d, reader, max_backs=MAX_BACKS, deadline=None,
             or is_search_flow_page(spans)
             or is_coin_task_product_page(spans)
         ):
-            return False   # 未知页面：原地停止，不盲按返回
+            # 未知页面：有界按返回试探（不原地停）。仍在淘宝包内就继续，
+            # 直到到达根页或耗尽次数；越界由下一轮首部检查兜底。
+            _checkpoint(deadline)
+            d.press("back")
+            _checkpoint(deadline)
+            _deadline_sleep(deadline, SWIPE_SETTLE)
+            continue
         _checkpoint(deadline)
         d.press("back")
         _checkpoint(deadline)
@@ -1298,9 +1307,10 @@ def _settle_back_to_coin_page(d, reader, deadline=None):
     """正常收尾时退出到淘金币首页（赚更多金币界面），便于刷新后续任务。
 
     真机经验：任务完成后必须回到"赚更多金币"界面才能刷新出后续任务，
-    停留在任务弹窗列表无法继续。只处理安全分支：已在淘金币首页 → 不动；
-    任务弹窗列表页/商品详情页 → 有界返回；其他页面或包名不安全 → 不动。
-    任何异常（含 deadline 到期）都吞掉并返回 False，绝不外泄或覆盖结果。
+    停留在任务弹窗列表无法继续。用户 2026-09-02 要求"执行完必须退出到
+    初始界面，别停在中间页"：已处理淘金币首页 → 不动；其余任意页面
+    （含未知页面）→ 交给 _safe_back_to_coin_page 有界回退。任何异常
+    （含 deadline 到期）都吞掉并返回 False，绝不外泄或覆盖结果。
     """
     try:
         _checkpoint(deadline)
@@ -1310,13 +1320,11 @@ def _settle_back_to_coin_page(d, reader, deadline=None):
         if (any(COIN_PAGE_ANCHOR in span.text for span in spans)
                 and find_unique_ocr_span(spans, MORE_COINS_ACTION) is not None):
             return True   # 已在淘金币首页（赚更多金币可见）
-        if not (any(LIST_ANCHOR in span.text for span in spans)
-                or is_product_detail_page(spans)
-                or is_search_entry_page(spans)
-                or is_search_result_feed(spans)
-                or is_search_flow_page(spans)
-                or is_coin_task_product_page(spans)):
-            return False  # 未知页面不动
+        # 用户 2026-09-02：执行完必须退到初始界面——淘宝首页/欢迎页也是
+        # 可接受：手机在淘宝内用户能手动开淘金币；继续按返回会退到桌面
+        # （非淘宝）反而让用户更难恢复。
+        if is_taobao_home_page(spans)[0]:
+            return True
         return _safe_back_to_coin_page(d, reader, deadline=deadline)
     except Exception:
         return False
@@ -1685,17 +1693,26 @@ def _run_entry(mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
         return RunOutcome(mode, RunStatus.STARTUP_FAILED, "ocr_initialization_failed")
     if dry_run:
         return _dry_run_scan(device, ocr_reader, deadline, logger, mode)
-    return _execute_scan(
-        device,
-        ocr_reader,
-        max_tasks,
-        logger,
-        mode,
-        task_key=task_key,
-        run_deadline=deadline,
-        task_timeout=task_timeout,
-        recovery_timeout=recovery_timeout,
-    )
+    try:
+        return _execute_scan(
+            device,
+            ocr_reader,
+            max_tasks,
+            logger,
+            mode,
+            task_key=task_key,
+            run_deadline=deadline,
+            task_timeout=task_timeout,
+            recovery_timeout=recovery_timeout,
+        )
+    finally:
+        # 用户 2026-09-02：执行完必须退出到初始界面（淘金币根页），
+        # 不因成功/超时/异常停在中间页/商品流。尽力而为：失败不覆盖
+        # 原始 outcome/退出码，也不输出异常正文。
+        try:
+            _settle_back_to_coin_page(device, ocr_reader, deadline=None)
+        except Exception:
+            pass
 
 
 def run_ocr_entry(

@@ -1873,6 +1873,11 @@ class ExecuteDeadlineTests(unittest.TestCase):
         with ExitStack() as stack:
             for attr, value in patches:
                 stack.enter_context(patch.object(runtime, attr, new=value))
+            # 收尾回退（2026-09-02 新增）在这些测试里是 no-op：本类验证
+            # deadline/中断语义，收尾行为由专门的 finally 收尾测试覆盖。
+            stack.enter_context(patch.object(
+                runtime, "_settle_back_to_coin_page", return_value=True,
+            ))
             outcome = runtime.run_ocr_entry(
                 serial="test-device",
                 max_tasks=max_tasks,
@@ -1886,6 +1891,33 @@ class ExecuteDeadlineTests(unittest.TestCase):
                 sleeper=sleeper,
             )
         return outcome, clock, device
+
+    def test_run_entry_finally_settles_back_to_coin_page(self):
+        # 用户 2026-09-02：执行完（含超时/异常路径）必须退出到初始界面——
+        # _run_entry 的 finally 必须调用收尾回退
+        clock = FakeClock()
+        sleeper = FakeSleeper(clock)
+        device = RecordingDeadlineDevice(clock)
+        reader = _FakeReader([ANCHOR_RAW] + UNKNOWN_ROW_RAW)
+        called = {}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                runtime, "_settle_back_to_coin_page",
+                side_effect=lambda *_a, **_k: called.setdefault("settled", True),
+            ))
+            runtime.run_ocr_entry(
+                serial="test-device",
+                max_tasks=2,
+                run_timeout=5,
+                task_timeout=30,
+                recovery_timeout=10,
+                connect=lambda _serial: device,
+                reader_factory=lambda *_args, **_kwargs: reader,
+                logger_factory=_fake_logger_factory,
+                clock=clock,
+                sleeper=sleeper,
+            )
+        self.assertTrue(called.get("settled"))
 
     def test_total_deadline_includes_target_location(self):
         # 列表锚点在屏、但无已注册任务：定位阶段滚动把总时限耗尽，
@@ -2205,7 +2237,8 @@ class InterruptHandlingTests(unittest.TestCase):
             raise KeyboardInterrupt()
 
         with patch.object(runtime, "on_task_list", new=on_task_list), \
-             patch.object(runtime, "run_safe_browse_tasks", side_effect=raise_interrupt):
+             patch.object(runtime, "run_safe_browse_tasks", side_effect=raise_interrupt), \
+             patch.object(runtime, "_settle_back_to_coin_page", return_value=True):
             outcome = runtime.run_ocr_entry(
                 serial="test-device",
                 max_tasks=1,
@@ -2465,11 +2498,22 @@ class SettleBackToCoinPageTests(unittest.TestCase):
         self.assertTrue(runtime._settle_back_to_coin_page(device, reader))
         self.assertGreaterEqual(device.press_count, 1)
 
-    def test_unknown_page_does_not_press_back(self):
+    def test_unknown_page_probes_back_boundedly(self):
+        # 用户 2026-09-02：执行完必须退出到初始界面——未知页面也按返回
+        # 试探（有界），不再原地停
         device = _ActionDevice()
-        reader = _SequenceReader([_UNKNOWN_FRAME])
+        reader = _SequenceReader([_UNKNOWN_FRAME] * 6)
         self.assertFalse(runtime._settle_back_to_coin_page(device, reader))
-        self.assertEqual(device.press_count, 0)
+        self.assertGreaterEqual(device.press_count, 1)
+
+    def test_unknown_page_backs_into_coin_page(self):
+        # 未知页面按返回后到达淘金币根页 → 成功（收尾达成初始界面）
+        device = _ActionDevice()
+        reader = _SequenceReader(
+            [_UNKNOWN_FRAME, _UNKNOWN_FRAME, _COIN_PAGE_FRAME, _COIN_PAGE_FRAME]
+        )
+        self.assertTrue(runtime._settle_back_to_coin_page(device, reader))
+        self.assertGreaterEqual(device.press_count, 1)
 
     def test_unsafe_package_does_not_press_back(self):
         device = _ActionDevice(package="com.other.app")
@@ -2481,11 +2525,34 @@ class SettleBackToCoinPageTests(unittest.TestCase):
 class SafeBackToCoinPageTests(unittest.TestCase):
     """_safe_back_to_coin_page：页面身份感知回退，根页面绝不越界。"""
 
-    def test_unknown_page_stops_in_place(self):
-        """未知页面（含淘宝首页）原地停止：不 wander、不盲按返回。"""
+    def test_unknown_page_probes_back_boundedly(self):
+        """未知页面（含淘宝首页）有界按返回试探（用户 2026-09-02：执行完
+        必须退出到初始界面，不原地停）；连续未知 → 耗尽次数失败。"""
         device = _ActionDevice()
+        reader = _SequenceReader([_UNKNOWN_FRAME] * 12)
+        self.assertFalse(runtime._safe_back_to_coin_page(device, reader))
+        self.assertEqual(device.press_count, runtime.MAX_BACKS)
+
+    def test_unknown_page_backs_into_coin_page(self):
+        """未知页面按返回后到达淘金币根页 → 成功停下（绝不 back 过冲）。"""
+        device = _ActionDevice()
+        frames = [_UNKNOWN_FRAME, _COIN_PAGE_FRAME, _COIN_PAGE_FRAME]
+        reader = _SequenceReader(frames)
+        self.assertTrue(runtime._safe_back_to_coin_page(device, reader))
+        self.assertEqual(device.press_count, 1)
+
+    def test_unknown_page_backs_out_of_taobao_stops(self):
+        """未知页面按返回后越出淘宝包（非淘宝）→ 立即停止不越界。"""
+        device = _ActionDevice(package="com.android.launcher")
         reader = _SequenceReader([_UNKNOWN_FRAME, _UNKNOWN_FRAME])
         self.assertFalse(runtime._safe_back_to_coin_page(device, reader))
+        self.assertEqual(device.press_count, 0)
+
+    def test_coin_page_never_backs_past_root(self):
+        """已在淘金币根页（赚更多金币可见）→ 不动，零返回。"""
+        device = _ActionDevice()
+        reader = _SequenceReader([_COIN_PAGE_FRAME, _COIN_PAGE_FRAME])
+        self.assertTrue(runtime._safe_back_to_coin_page(device, reader))
         self.assertEqual(device.press_count, 0)
 
 
@@ -3026,7 +3093,9 @@ class SettleBackPageAwareTests(unittest.TestCase):
         self.assertEqual(device.presses, [])
         self.assertEqual(read.call_count, 2)  # 本体 1 次 + 关弹窗探测 1 次
 
-    def test_unknown_taobao_page_stops_in_place(self):
+    def test_unknown_taobao_page_probes_back_boundedly(self):
+        # 用户 2026-09-02：执行完必须退出到初始界面——未知页面也按返回
+        # 试探（有界 max_backs），连续未知才耗尽次数失败
         device = self._PressDevice()
         with patch.object(
             runtime,
@@ -3039,7 +3108,7 @@ class SettleBackPageAwareTests(unittest.TestCase):
                 device, None, deadline=None
             )
         self.assertFalse(result)
-        self.assertEqual(device.presses, [])
+        self.assertEqual(len(device.presses), runtime.MAX_BACKS)
 
     def test_known_flow_page_backs_once_then_arrives(self):
         device = self._PressDevice()
