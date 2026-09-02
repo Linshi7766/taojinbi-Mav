@@ -1,4 +1,4 @@
-import contextlib
+﻿import contextlib
 import importlib.util
 import io
 import json
@@ -20,7 +20,9 @@ _spec = importlib.util.spec_from_file_location(
 runtime = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(runtime)
 import taojinbi_mav.runtime.logging as runtime_logging
-from taojinbi_mav.ocr_ui import BrowseTarget, ImmersiveTarget, OcrSpan
+from taojinbi_mav.ocr_ui import (
+    BrowseTarget, ImmersiveTarget, OcrSpan, ScanOutcome, ScanStatus,
+)
 from taojinbi_mav.task_core import ImmersiveRunResult
 from taojinbi_mav.runtime.config import (
     build_ocr_arg_parser,
@@ -583,7 +585,7 @@ class EntryValidationRetryTests(unittest.TestCase):
         with patch.object(
             runtime,
             "locate_immersive_target",
-            side_effect=[target, target],
+            side_effect=[ScanOutcome.found(target), ScanOutcome.found(target)],
         ) as locate, patch.object(
             runtime,
             "ocr_screen",
@@ -636,7 +638,7 @@ class SafeBrowseLoopTests(unittest.TestCase):
         with patch.object(
             runtime,
             "locate_safe_browse_target",
-            side_effect=[target, target, None],
+            side_effect=[ScanOutcome.found(target), ScanOutcome.found(target), ScanOutcome.not_found()],
         ) as locate, patch.object(
             runtime,
             "run_one_safe_browse_task",
@@ -675,7 +677,7 @@ class SafeBrowseLoopTests(unittest.TestCase):
         with patch.object(
             runtime,
             "locate_safe_browse_target",
-            side_effect=[target, target, None],
+            side_effect=[ScanOutcome.found(target), ScanOutcome.found(target), ScanOutcome.not_found()],
         ) as locate, patch.object(
             runtime,
             "run_one_safe_browse_task",
@@ -714,7 +716,7 @@ class SafeBrowseLoopTests(unittest.TestCase):
         with patch.object(
             runtime,
             "locate_safe_browse_target",
-            side_effect=[target, target, target, None],
+            side_effect=[ScanOutcome.found(target), ScanOutcome.found(target), ScanOutcome.found(target), ScanOutcome.not_found()],
         ) as locate, patch.object(
             runtime,
             "run_one_safe_browse_task",
@@ -743,7 +745,7 @@ class SafeBrowseLoopTests(unittest.TestCase):
         with patch.object(
             runtime,
             "locate_safe_browse_target",
-            side_effect=[target, target],
+            side_effect=[ScanOutcome.found(target), ScanOutcome.found(target)],
         ) as locate, patch.object(
             runtime,
             "ocr_screen",
@@ -919,7 +921,7 @@ class StrategyRuntimeIntegrationTests(unittest.TestCase):
 
         with patch.object(
             runtime, "run_verified_immersive_progress", side_effect=fake_core
-        ), patch.object(runtime, "locate_task_progress", return_value=(0, 6)):
+        ), patch.object(runtime, "locate_task_progress", return_value=ScanOutcome.found((0, 6))):
             runtime.run_one_safe_browse_task(
                 _WorkingDevice(), None, "看看#斯维诗鱼油", 6
             )
@@ -935,7 +937,7 @@ class StrategyRuntimeIntegrationTests(unittest.TestCase):
 
         with patch.object(
             runtime, "run_verified_immersive_progress", side_effect=fake_core
-        ), patch.object(runtime, "locate_task_progress", return_value=(0, 6)):
+        ), patch.object(runtime, "locate_task_progress", return_value=ScanOutcome.found((0, 6))):
             runtime.run_one_safe_browse_task(
                 _WorkingDevice(), None, "搜一搜你心仪的宝贝", 6
             )
@@ -951,7 +953,7 @@ class StrategyRuntimeIntegrationTests(unittest.TestCase):
 
         with patch.object(
             runtime, "run_verified_immersive_progress", side_effect=fake_core
-        ), patch.object(runtime, "locate_task_progress", return_value=(0, 4)):
+        ), patch.object(runtime, "locate_task_progress", return_value=ScanOutcome.found((0, 4))):
             runtime.run_one_safe_browse_task(
                 _WorkingDevice(), None, "发现精选好物", 4
             )
@@ -972,7 +974,7 @@ class StrategyRuntimeIntegrationTests(unittest.TestCase):
             runtime, "profile_for_title", return_value=featured, create=True
         ), patch.object(
             runtime, "run_verified_immersive_progress", side_effect=fake_core
-        ), patch.object(runtime, "locate_task_progress", return_value=(0, 6)):
+        ), patch.object(runtime, "locate_task_progress", return_value=ScanOutcome.found((0, 6))):
             runtime.run_one_safe_browse_task(
                 _WorkingDevice(), None, "看看#斯维诗鱼油", 6
             )
@@ -1022,6 +1024,59 @@ class StrategyRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(observed, [False])
         back.assert_called_once()
 
+    def test_entered_but_round_incomplete_without_progress_not_browsed(self):
+        # 2B 证据链：只进入信息流(enter 成功)但完整往返失败(_safe_back 失败→
+        # no_safe_control)、且从未读到进度推进 → browsed 必须为 False，
+        # 不得因 entered>0 就谎报已浏览（真机 run8 误报 likely 但余额没涨）
+        from taojinbi_mav.task_strategies import StrategyResult
+
+        def fake_core(**kwargs):
+            performed = kwargs["perform_one"]()
+            self.assertFalse(performed)
+            return ImmersiveRunResult(False, 0, 0, "no_safe_control", ())
+
+        with patch.object(runtime, "enter_task_from_list", return_value=True), \
+             patch.object(runtime, "select_task_strategy",
+                          return_value="feed", create=True), \
+             patch.object(runtime, "execute_task_strategy",
+                          return_value=StrategyResult(True), create=True), \
+             patch.object(runtime, "_safe_back_to_coin_page", return_value=False), \
+             patch.object(runtime, "run_verified_immersive_progress",
+                          side_effect=fake_core), \
+             patch.object(runtime.time, "sleep"):
+            result, browsed = runtime.run_one_safe_browse_task(
+                _GestureDevice(), None, "发现精选好物", 5
+            )
+
+        self.assertEqual(result.reason, "no_safe_control")
+        self.assertFalse(browsed)
+
+    def test_completed_round_without_final_progress_is_browsed(self):
+        # 对照：完整往返(enter→策略→_safe_back→重开弹窗全成功)即 browse_completed，
+        # 即使返回后读不到进度也计 browsed（短任务完成后行消失的真机到账场景）
+        from taojinbi_mav.task_strategies import StrategyResult
+
+        def fake_core(**kwargs):
+            self.assertTrue(kwargs["perform_one"]())
+            return ImmersiveRunResult(False, 0, 0, "missing_progress", ())
+
+        with patch.object(runtime, "enter_task_from_list", return_value=True), \
+             patch.object(runtime, "select_task_strategy",
+                          return_value="feed", create=True), \
+             patch.object(runtime, "execute_task_strategy",
+                          return_value=StrategyResult(True), create=True), \
+             patch.object(runtime, "_safe_back_to_coin_page", return_value=True), \
+             patch.object(runtime, "_reopen_task_popup", return_value=True), \
+             patch.object(runtime, "run_verified_immersive_progress",
+                          side_effect=fake_core), \
+             patch.object(runtime.time, "sleep"):
+            result, browsed = runtime.run_one_safe_browse_task(
+                _GestureDevice(), None, "发现精选好物", 5
+            )
+
+        self.assertEqual(result.reason, "missing_progress")
+        self.assertTrue(browsed)
+
     def test_legacy_immersive_wrapper_delegates_to_feed_strategy(self):
         from taojinbi_mav.task_strategies import FEED_BROWSE, StrategyResult
 
@@ -1055,6 +1110,9 @@ class RefreshIntegrationTests(unittest.TestCase):
             patch.object(runtime, "back_to_task_list_ocr", return_value=True),
             patch.object(runtime, "BROWSE_PER_ROUND", 0),
             patch.object(runtime.time, "sleep"),
+            # perform_one 完整往返需要这两步收尾成功才计 browse_completed
+            patch.object(runtime, "_safe_back_to_coin_page", return_value=True),
+            patch.object(runtime, "_reopen_task_popup", return_value=True),
         )
 
     def test_task_row_unobserved_uses_bounded_refresh_result(self):
@@ -1069,7 +1127,7 @@ class RefreshIntegrationTests(unittest.TestCase):
 
         patches = self._run_one_patches()
         sleeps = []
-        with patches[0], patches[1], patches[2], patches[3], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch.object(runtime, "_deadline_sleep",
                           side_effect=lambda _d, s: sleeps.append(s)), \
              patch.object(runtime, "run_verified_immersive_progress", side_effect=fake_core), \
@@ -1101,7 +1159,7 @@ class RefreshIntegrationTests(unittest.TestCase):
             return next(core_results)
 
         patches = self._run_one_patches()
-        with patches[0], patches[1], patches[2], patches[3], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch.object(runtime, "run_verified_immersive_progress", side_effect=fake_core), \
              patch.object(
                  runtime,
@@ -1127,7 +1185,7 @@ class RefreshIntegrationTests(unittest.TestCase):
             return first
 
         patches = self._run_one_patches()
-        with patches[0] as enter, patches[1], patches[2], patches[3], \
+        with patches[0] as enter, patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch.object(runtime, "run_verified_immersive_progress", side_effect=fake_core), \
              patch.object(
                  runtime,
@@ -1161,7 +1219,7 @@ class RefreshIntegrationTests(unittest.TestCase):
             return first
 
         patches = self._run_one_patches()
-        with patches[0] as enter, patches[1], patches[2], patches[3], \
+        with patches[0] as enter, patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch.object(runtime, "_deadline_sleep",
                           side_effect=lambda _d, s: sleeps.append(s)), \
              patch.object(runtime, "run_verified_immersive_progress",
@@ -1189,7 +1247,7 @@ class RefreshIntegrationTests(unittest.TestCase):
             return first
 
         patches = self._run_one_patches()
-        with patches[0], patches[1], patches[2], patches[3], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch.object(runtime, "_deadline_sleep",
                           side_effect=lambda _d, s: sleeps.append(s)), \
              patch.object(runtime, "run_verified_immersive_progress",
@@ -1217,7 +1275,7 @@ class RefreshIntegrationTests(unittest.TestCase):
             return first
 
         patches = self._run_one_patches()
-        with patches[0], patches[1], patches[2], patches[3], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch.object(runtime, "_deadline_sleep",
                           side_effect=lambda _d, s: sleeps.append(s)), \
              patch.object(runtime, "run_verified_immersive_progress",
@@ -1244,7 +1302,7 @@ class RefreshIntegrationTests(unittest.TestCase):
             return first
 
         patches = self._run_one_patches()
-        with patches[0] as enter, patches[1], patches[2], patches[3], \
+        with patches[0] as enter, patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch.object(runtime, "run_verified_immersive_progress", side_effect=fake_core), \
              patch.object(
                  runtime,
@@ -1593,7 +1651,7 @@ class RefreshRecoveryTests(unittest.TestCase):
              patch.object(runtime, "ocr_screen", return_value=action_spans), \
              patch.object(runtime, "safe_tap", return_value=True), \
              patch.object(runtime, "on_task_list", return_value=True), \
-             patch.object(runtime, "locate_safe_browse_target", return_value=target), \
+             patch.object(runtime, "locate_safe_browse_target", return_value=ScanOutcome.found(target)), \
              patch.object(runtime, "_popup_scroll"), \
              patch.object(runtime.time, "sleep"), \
              patch.object(
@@ -1647,7 +1705,7 @@ class RefreshRecoveryTests(unittest.TestCase):
              patch.object(runtime, "ocr_screen", return_value=action_spans), \
              patch.object(runtime, "safe_tap", side_effect=lambda *_: calls.append("tap") or True), \
              patch.object(runtime, "on_task_list", return_value=True), \
-             patch.object(runtime, "locate_safe_browse_target", return_value=target), \
+             patch.object(runtime, "locate_safe_browse_target", return_value=ScanOutcome.found(target)), \
              patch.object(runtime, "_popup_scroll",
                           side_effect=lambda *a, **k: calls.append("scroll")), \
              patch.object(runtime.time, "sleep"):
@@ -1669,7 +1727,7 @@ class RefreshRecoveryTests(unittest.TestCase):
              patch.object(runtime, "ocr_screen", return_value=action_spans), \
              patch.object(runtime, "safe_tap", return_value=True), \
              patch.object(runtime, "on_task_list", return_value=True), \
-             patch.object(runtime, "locate_safe_browse_target", return_value=None), \
+             patch.object(runtime, "locate_safe_browse_target", return_value=ScanOutcome.not_found()), \
              patch.object(runtime, "_popup_scroll"), \
              patch.object(runtime.time, "sleep"):
             result = runtime.refresh_task_after_disappearance(
@@ -1849,7 +1907,7 @@ class StartupPopupRecoveryTests(unittest.TestCase):
             transitions=((1, 2),),
         )
         with patch.object(runtime, "on_task_list", return_value=True), \
-             patch.object(runtime, "locate_safe_browse_target", return_value=target), \
+             patch.object(runtime, "locate_safe_browse_target", return_value=ScanOutcome.found(target)), \
              patch.object(runtime, "run_one_safe_browse_task", return_value=(result, True)), \
              patch.object(runtime, "_settle_back_to_coin_page", return_value=True):
             outcome = runtime._execute_scan(
@@ -1951,7 +2009,7 @@ class ExecuteDeadlineTests(unittest.TestCase):
             # 定位阶段消耗 30 秒（受总 deadline 约束）
             if deadline is not None:
                 deadline.sleep(30)
-            return target
+            return ScanOutcome.found(target)
 
         def consuming_strategy(strategy, context, browse_count):
             for _ in range(1000):
@@ -2027,17 +2085,15 @@ class ExecuteDeadlineTests(unittest.TestCase):
         self.assertEqual(clock(), 5.0)
 
     def test_recovery_failure_still_returns_timeout_and_bounds_window(self):
-        calls = {"n": 0}
-
-        def fake_on_task_list(d, reader, *args, **kwargs):
-            calls["n"] += 1
-            return calls["n"] == 1  # 初始检查成功，恢复期始终失败
+        # 恢复期始终“安全但不在列表”(off_list)：有界按 back，直到 recovery deadline
+        def fake_off_list(d, reader, *args, **kwargs):
+            return "off_list"
 
         outcome, clock, device = self._run_execute(
             [ANCHOR_RAW] + UNKNOWN_ROW_RAW,
             run_timeout=5,
             recovery_timeout=10,
-            patches=[("on_task_list", fake_on_task_list)],
+            patches=[("read_task_list_state", fake_off_list)],
         )
         self.assertEqual(
             (outcome.status, outcome.reason, outcome.exit_code),
@@ -2058,7 +2114,7 @@ class ExecuteDeadlineTests(unittest.TestCase):
                         max_scrolls=runtime.MAX_LIST_SCROLLS, deadline=None):
             if deadline is not None:
                 deadline.sleep(20)
-            return target
+            return ScanOutcome.found(target)
 
         def consuming_strategy(strategy, context, browse_count):
             for _ in range(1000):
@@ -2185,7 +2241,7 @@ class PublicOutputRedactionTests(unittest.TestCase):
         buffer = io.StringIO()
         with redirect_stdout(buffer), \
              patch.object(runtime, "locate_safe_browse_target",
-                          new=lambda *a, **k: target), \
+                          new=lambda *a, **k: ScanOutcome.found(target)), \
              patch.object(runtime, "find_safe_browse_target",
                           new=lambda *a, **k: None), \
              patch.object(runtime, "in_taobao_and_safe",
@@ -2234,7 +2290,8 @@ class PublicOutputRedactionTests(unittest.TestCase):
 class InterruptHandlingTests(unittest.TestCase):
     """两阶段 Ctrl+C：dry-run 立即中止退出 130；execute 首次安全恢复、二次立即停止。"""
 
-    def _run_execute(self, on_task_list, logger_factory=_fake_logger_factory):
+    def _run_execute(self, on_task_list, logger_factory=_fake_logger_factory,
+                     state_fn=None):
         clock = FakeClock()
         sleeper = FakeSleeper(clock)
         device = RecordingDeadlineDevice(clock)
@@ -2243,9 +2300,15 @@ class InterruptHandlingTests(unittest.TestCase):
         def raise_interrupt(*_args, **_kwargs):
             raise KeyboardInterrupt()
 
+        state_patch = (
+            patch.object(runtime, "read_task_list_state", new=state_fn)
+            if state_fn is not None
+            else contextlib.nullcontext()
+        )
         with patch.object(runtime, "on_task_list", new=on_task_list), \
              patch.object(runtime, "run_safe_browse_tasks", side_effect=raise_interrupt), \
-             patch.object(runtime, "_settle_back_to_coin_page", return_value=True):
+             patch.object(runtime, "_settle_back_to_coin_page", return_value=True), \
+             state_patch:
             outcome = runtime.run_ocr_entry(
                 serial="test-device",
                 max_tasks=1,
@@ -2276,13 +2339,17 @@ class InterruptHandlingTests(unittest.TestCase):
         self.assertEqual(device.actions, [])
 
     def test_first_execute_interrupt_attempts_only_safe_recovery(self):
-        calls = {"n": 0}
+        states = iter(["off_list", "on_list"])  # 恢复首读不在列表→按一次 back，再读回到列表
 
-        def fake_on_task_list(_d, _reader, *_args, **_kwargs):
-            calls["n"] += 1
-            return calls["n"] == 1 or calls["n"] == 3  # 初始检查通过；恢复首读失败触发一次 back，再读成功
+        def fake_state(_d, _reader, *_args, **_kwargs):
+            return next(states)
 
-        outcome, _clock, device = self._run_execute(fake_on_task_list)
+        def fake_on_list(_d, _reader, *_args, **_kwargs):
+            return True  # 初始弹窗检查通过
+
+        outcome, _clock, device = self._run_execute(
+            fake_on_list, state_fn=fake_state,
+        )
         self.assertEqual(
             (outcome.status, outcome.exit_code),
             (RunStatus.CANCELLED, ExitCode.CANCELLED),
@@ -2468,6 +2535,45 @@ _COIN_PAGE_FRAME = [
 ]
 _LIST_FRAME = [ANCHOR_RAW]
 _SEARCH_RESULT_FRAME = [(_box(540, 300), "浏览10秒可领金币", 0.99)]
+
+
+class BackToTaskListFailClosedTests(unittest.TestCase):
+    """back_to_task_list_ocr：OCR 失败/非淘宝包时绝不盲目按返回（Codex P0-3）。"""
+
+    def test_on_list_returns_true_without_back(self):
+        device = _ActionDevice()
+        reader = _SequenceReader([_LIST_FRAME])
+        self.assertTrue(runtime.back_to_task_list_ocr(device, reader))
+        self.assertEqual(device.press_count, 0)
+
+    def test_presses_back_through_safe_non_list_page(self):
+        device = _ActionDevice()
+        # 首帧在淘金币根页（安全但非列表），按一次返回后到达列表
+        reader = _SequenceReader([_COIN_PAGE_FRAME, _LIST_FRAME, _LIST_FRAME])
+        self.assertTrue(
+            runtime.back_to_task_list_ocr(device, reader, max_backs=3)
+        )
+        self.assertGreaterEqual(device.press_count, 1)
+
+    def test_ocr_failure_never_presses_back(self):
+        class RaisingReader:
+            def readtext(self, _path):
+                raise RuntimeError("ocr backend down")
+
+        device = _ActionDevice()
+        self.assertFalse(
+            runtime.back_to_task_list_ocr(device, RaisingReader(), max_backs=3)
+        )
+        self.assertEqual(device.press_count, 0)
+
+    def test_unsafe_package_never_presses_back_even_with_anchor(self):
+        # 即使 OCR 文本像任务列表，前台不是淘宝也绝不按返回
+        device = _ActionDevice(package="com.other.app")
+        reader = _SequenceReader([_LIST_FRAME, _LIST_FRAME, _LIST_FRAME])
+        self.assertFalse(
+            runtime.back_to_task_list_ocr(device, reader, max_backs=3)
+        )
+        self.assertEqual(device.press_count, 0)
 
 
 class SettleBackToCoinPageTests(unittest.TestCase):
@@ -2772,7 +2878,7 @@ class TaskKeyRoutingTests(unittest.TestCase):
 
         def fake_locate(*_args, **_kwargs):
             captured.update(_kwargs)
-            return None
+            return ScanOutcome.not_found()
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(
@@ -2859,7 +2965,8 @@ class TaskEventLoggingTests(unittest.TestCase):
         logger, device, reader, target, _result = self._build()
         with ExitStack() as stack:
             stack.enter_context(patch.object(
-                runtime, "locate_safe_browse_target", return_value=target,
+                runtime, "locate_safe_browse_target",
+             return_value=ScanOutcome.found(target),
             ))
             stack.enter_context(patch.object(
                 runtime, "run_one_safe_browse_task", return_value=(result, True),
@@ -2873,7 +2980,8 @@ class TaskEventLoggingTests(unittest.TestCase):
         logger, device, reader, target, result = self._build()
         with ExitStack() as stack:
             stack.enter_context(patch.object(
-                runtime, "locate_safe_browse_target", return_value=target,
+                runtime, "locate_safe_browse_target",
+             return_value=ScanOutcome.found(target),
             ))
             stack.enter_context(patch.object(
                 runtime, "run_one_safe_browse_task", return_value=(result, True),
@@ -2934,7 +3042,8 @@ class TaskEventLoggingTests(unittest.TestCase):
         )
         with ExitStack() as stack:
             stack.enter_context(patch.object(
-                runtime, "locate_safe_browse_target", return_value=target,
+                runtime, "locate_safe_browse_target",
+             return_value=ScanOutcome.found(target),
             ))
             stack.enter_context(patch.object(
                 runtime, "run_one_safe_browse_task",
@@ -2989,7 +3098,8 @@ class TaskEventLoggingTests(unittest.TestCase):
         logger, device, reader, target, result = self._build()
         with ExitStack() as stack:
             stack.enter_context(patch.object(
-                runtime, "locate_safe_browse_target", return_value=target,
+                runtime, "locate_safe_browse_target",
+             return_value=ScanOutcome.found(target),
             ))
             stack.enter_context(patch.object(
                 runtime, "run_one_safe_browse_task", return_value=(result, True),
@@ -3015,7 +3125,8 @@ class RowUnobservedClassificationTests(unittest.TestCase):
         device, reader, target = self._build()
         with ExitStack() as stack:
             stack.enter_context(patch.object(
-                runtime, "locate_safe_browse_target", return_value=target,
+                runtime, "locate_safe_browse_target",
+             return_value=ScanOutcome.found(target),
             ))
             stack.enter_context(patch.object(
                 runtime, "run_one_safe_browse_task", return_value=(result, browsed),

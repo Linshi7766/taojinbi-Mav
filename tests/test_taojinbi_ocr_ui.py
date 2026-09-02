@@ -21,7 +21,6 @@ from taojinbi_mav.ocr_ui import (
     find_immersive_progress,
     find_immersive_target,
     find_progress_value,
-    find_result_product_candidates,
     find_safe_browse_target,
     find_unique_ocr_span,
     inspect_visible_task_rows,
@@ -43,6 +42,8 @@ from taojinbi_mav.ocr_ui import (
     read_safe_browse_progress,
     scroll_to_top_then_find,
     screen_text_signature,
+    ScanOutcome,
+    ScanStatus,
 )
 
 
@@ -350,24 +351,87 @@ class ScreenTextSignatureTests(unittest.TestCase):
         self.assertNotEqual(screen_text_signature(a), screen_text_signature(b))
 
 
+class ScanOutcomeControllerTests(unittest.TestCase):
+    """四态扫描控制器：只有 not_found 允许继续滚动；unsafe/ocr_failed 立即 fail-closed。"""
+
+    def test_unsafe_probe_aborts_without_further_scrolling(self):
+        scrolls = {"n": 0}
+        probes = iter([
+            ScanOutcome(ScanStatus.NOT_FOUND, signature="a"),
+            ScanOutcome(ScanStatus.UNSAFE),
+        ])
+
+        def scroll():
+            scrolls["n"] += 1
+
+        outcome = locate_by_scroll(lambda: next(probes), scroll)
+        self.assertEqual(outcome.status, ScanStatus.UNSAFE)
+        # 第一帧 not_found 允许滚一次；第二帧 unsafe 立即停，绝不再滚
+        self.assertEqual(scrolls["n"], 1)
+
+    def test_ocr_failed_on_first_frame_never_scrolls(self):
+        scrolls = {"n": 0}
+        outcome = locate_by_scroll(
+            lambda: ScanOutcome(ScanStatus.OCR_FAILED),
+            lambda: scrolls.__setitem__("n", scrolls["n"] + 1),
+        )
+        self.assertEqual(outcome.status, ScanStatus.OCR_FAILED)
+        self.assertEqual(scrolls["n"], 0)
+
+    def test_found_outcome_carries_target(self):
+        outcome = locate_by_scroll(
+            lambda: ScanOutcome(ScanStatus.FOUND, target="T", signature="a"),
+            lambda: None,
+        )
+        self.assertTrue(outcome.is_found)
+        self.assertEqual(outcome.target, "T")
+
+    def test_exhausted_scroll_returns_not_found(self):
+        counter = {"i": 0}
+
+        def probe():
+            counter["i"] += 1
+            return ScanOutcome(ScanStatus.NOT_FOUND, signature=str(counter["i"]))
+
+        outcome = locate_by_scroll(probe, lambda: None, max_scrolls=3)
+        self.assertEqual(outcome.status, ScanStatus.NOT_FOUND)
+        self.assertIsNone(outcome.target)
+        self.assertEqual(counter["i"], 4)
+
+    def test_scroll_to_top_aborts_unsafe_without_down_phase(self):
+        probes = iter([
+            ScanOutcome(ScanStatus.NOT_FOUND, signature="b"),
+            ScanOutcome(ScanStatus.UNSAFE),
+        ])
+        ups, downs = {"n": 0}, {"n": 0}
+        outcome = scroll_to_top_then_find(
+            probe=lambda: next(probes),
+            scroll_up=lambda: ups.__setitem__("n", ups["n"] + 1),
+            scroll_down=lambda: downs.__setitem__("n", downs["n"] + 1),
+        )
+        self.assertEqual(outcome.status, ScanStatus.UNSAFE)
+        self.assertEqual(downs["n"], 0)
+
+
 class LocateByScrollTests(unittest.TestCase):
     def test_returns_target_without_scrolling_when_found_immediately(self):
         scrolls = {"n": 0}
 
         def probe():
-            return "TARGET", frozenset({"a"})
+            return ScanOutcome.found("TARGET", frozenset({"a"}))
 
         def scroll():
             scrolls["n"] += 1
 
-        self.assertEqual(locate_by_scroll(probe, scroll), "TARGET")
+        outcome = locate_by_scroll(probe, scroll)
+        self.assertEqual(outcome.target, "TARGET")
         self.assertEqual(scrolls["n"], 0)
 
     def test_finds_target_after_two_scrolls(self):
         seq = iter([
-            (None, frozenset({"a"})),
-            (None, frozenset({"b"})),
-            ("T", frozenset({"c"})),
+            ScanOutcome.not_found(frozenset({"a"})),
+            ScanOutcome.not_found(frozenset({"b"})),
+            ScanOutcome.found("T", frozenset({"c"})),
         ])
         scrolls = {"n": 0}
 
@@ -377,14 +441,15 @@ class LocateByScrollTests(unittest.TestCase):
         def scroll():
             scrolls["n"] += 1
 
-        self.assertEqual(locate_by_scroll(probe, scroll, max_scrolls=8), "T")
+        outcome = locate_by_scroll(probe, scroll, max_scrolls=8)
+        self.assertEqual(outcome.target, "T")
         self.assertEqual(scrolls["n"], 2)
 
     def test_fails_closed_at_bottom_when_screen_unchanged(self):
         seq = iter([
-            (None, frozenset({"a"})),
-            (None, frozenset({"a"})),
-            (None, frozenset({"a"})),
+            ScanOutcome.not_found(frozenset({"a"})),
+            ScanOutcome.not_found(frozenset({"a"})),
+            ScanOutcome.not_found(frozenset({"a"})),
         ])
         scrolls = {"n": 0}
 
@@ -394,15 +459,16 @@ class LocateByScrollTests(unittest.TestCase):
         def scroll():
             scrolls["n"] += 1
 
-        self.assertIsNone(locate_by_scroll(probe, scroll, max_scrolls=8))
+        outcome = locate_by_scroll(probe, scroll, max_scrolls=8)
+        self.assertEqual(outcome.status, ScanStatus.NOT_FOUND)
         self.assertEqual(scrolls["n"], 2)
 
     def test_does_not_stop_after_one_unchanged_swipe(self):
         # 第一次滑动后 OCR 集合暂时不变，下一屏变化时仍应继续查找。
         seq = iter([
-            (None, frozenset({"a"})),
-            (None, frozenset({"a"})),
-            ("TARGET", frozenset({"b"})),
+            ScanOutcome.not_found(frozenset({"a"})),
+            ScanOutcome.not_found(frozenset({"a"})),
+            ScanOutcome.found("TARGET", frozenset({"b"})),
         ])
         scrolls = {"n": 0}
 
@@ -412,7 +478,8 @@ class LocateByScrollTests(unittest.TestCase):
         def scroll():
             scrolls["n"] += 1
 
-        self.assertEqual(locate_by_scroll(probe, scroll, max_scrolls=8), "TARGET")
+        outcome = locate_by_scroll(probe, scroll, max_scrolls=8)
+        self.assertEqual(outcome.target, "TARGET")
         self.assertEqual(scrolls["n"], 2)
 
     def test_fails_closed_when_max_scrolls_exhausted(self):
@@ -421,12 +488,13 @@ class LocateByScrollTests(unittest.TestCase):
 
         def probe():
             counter["i"] += 1
-            return None, frozenset({str(counter["i"])})
+            return ScanOutcome.not_found(frozenset({str(counter["i"])}))
 
         def scroll():
             scrolls["n"] += 1
 
-        self.assertIsNone(locate_by_scroll(probe, scroll, max_scrolls=3))
+        outcome = locate_by_scroll(probe, scroll, max_scrolls=3)
+        self.assertEqual(outcome.status, ScanStatus.NOT_FOUND)
         self.assertEqual(counter["i"], 4)   # max_scrolls + 1 次 probe
         self.assertEqual(scrolls["n"], 3)   # 至多 max_scrolls 次滚动
 
@@ -876,65 +944,67 @@ class ScrollToTopThenFindTests(unittest.TestCase):
         # 模拟：初始在中部(sig=b)，上滚三次后 a 连续两次不变才到顶，
         # 再下滚逐屏 c、d，在第三个下滚后的屏命中目标 T。
         probes = iter([
-            (None, "b"),   # 初始
-            (None, "a"),   # 上滚1
-            (None, "a"),   # 上滚2 → 第一次不变
-            (None, "a"),   # 上滚3 → 第二次不变，到顶
-            (None, "c"),   # 下滚1
-            (None, "d"),   # 下滚2
-            ("T", "e"),    # 下滚3 命中
+            ScanOutcome.not_found("b"),   # 初始
+            ScanOutcome.not_found("a"),   # 上滚1
+            ScanOutcome.not_found("a"),   # 上滚2 → 第一次不变
+            ScanOutcome.not_found("a"),   # 上滚3 → 第二次不变，到顶
+            ScanOutcome.not_found("c"),   # 下滚1
+            ScanOutcome.not_found("d"),   # 下滚2
+            ScanOutcome.found("T", "e"),  # 下滚3 命中
         ])
         ups, downs = {"n": 0}, {"n": 0}
 
-        result = scroll_to_top_then_find(
+        outcome = scroll_to_top_then_find(
             probe=lambda: next(probes),
             scroll_up=lambda: ups.__setitem__("n", ups["n"] + 1),
             scroll_down=lambda: downs.__setitem__("n", downs["n"] + 1),
             max_scrolls=8,
         )
-        self.assertEqual(result, "T")
+        self.assertEqual(outcome.target, "T")
         self.assertEqual(ups["n"], 3)     # 上滚 3 次到顶
         self.assertEqual(downs["n"], 2)   # 下滚 2 次后命中
 
     def test_finds_immediately_at_top(self):
         probes = iter([
-            (None, "a"), (None, "a"), (None, "a"),  # 两次不变确认已在顶
-            ("T", "a"),                              # 到顶后第 0 屏即命中
+            ScanOutcome.not_found("a"), ScanOutcome.not_found("a"),
+            ScanOutcome.not_found("a"),  # 两次不变确认已在顶
+            ScanOutcome.found("T", "a"),  # 到顶后第 0 屏即命中
         ])
-        result = scroll_to_top_then_find(
+        outcome = scroll_to_top_then_find(
             probe=lambda: next(probes),
             scroll_up=lambda: None,
             scroll_down=lambda: None,
         )
-        self.assertEqual(result, "T")
+        self.assertEqual(outcome.target, "T")
 
-    def test_returns_none_when_absent_after_full_scan(self):
-        # 到顶后逐屏都无目标，连续两次不变才滚到底 → None
-        seq = [(None, "a"), (None, "a"), (None, "a")]  # 到顶
-        seq += [(None, "x"), (None, "x"), (None, "x")]  # 到底
+    def test_returns_not_found_when_absent_after_full_scan(self):
+        # 到顶后逐屏都无目标，连续两次不变才滚到底 → not_found
+        seq = [ScanOutcome.not_found("a")] * 3   # 到顶
+        seq += [ScanOutcome.not_found("x")] * 3  # 到底
         probes = iter(seq)
-        result = scroll_to_top_then_find(
+        outcome = scroll_to_top_then_find(
             probe=lambda: next(probes),
             scroll_up=lambda: None,
             scroll_down=lambda: None,
             max_scrolls=8,
         )
-        self.assertIsNone(result)
+        self.assertEqual(outcome.status, ScanStatus.NOT_FOUND)
 
     def test_does_not_stop_after_one_unchanged_downward_screen(self):
         probes = iter([
-            (None, "a"), (None, "a"), (None, "a"),  # 上滚两次不变，到顶
-            (None, "x"), (None, "x"),                # 下滚一次后第一次不变
-            ("T", "y"),                              # 下一屏变化并命中
+            ScanOutcome.not_found("a"), ScanOutcome.not_found("a"),
+            ScanOutcome.not_found("a"),  # 上滚两次不变，到顶
+            ScanOutcome.not_found("x"), ScanOutcome.not_found("x"),  # 下滚一次后第一次不变
+            ScanOutcome.found("T", "y"),  # 下一屏变化并命中
         ])
         downs = {"n": 0}
 
-        result = scroll_to_top_then_find(
+        outcome = scroll_to_top_then_find(
             probe=lambda: next(probes),
             scroll_up=lambda: None,
             scroll_down=lambda: downs.__setitem__("n", downs["n"] + 1),
         )
-        self.assertEqual(result, "T")
+        self.assertEqual(outcome.target, "T")
         self.assertEqual(downs["n"], 2)
 
 
@@ -1197,19 +1267,6 @@ class SearchFirstTaskTests(unittest.TestCase):
         feed = parse_ocr_spans(self.FEED_SAMPLE)
         self.assertTrue(is_product_detail_page(detail))
         self.assertFalse(is_product_detail_page(feed))
-
-    def test_result_product_candidates_pick_titles_not_noise(self):
-        feed = parse_ocr_spans(self.FEED_SAMPLE)
-        texts = [c.text for c in
-                 find_result_product_candidates(feed, self.SCREEN)]
-        # 商品标题入选；奖励条/搜索词/价格不得入选
-        self.assertIn("iPhone 17e 苹果手机全新国行", texts)
-        self.assertNotIn("浏览10秒可领币20", texts)
-        self.assertNotIn("任意下单最高另得500淘金币", texts)
-        self.assertNotIn("￥503.43", texts)
-        # 顶部搜索框关键词（屏幕上部）也不得入选
-        self.assertNotIn("iPhone17", texts)
-
 
 class BrowseBadgeTests(unittest.TestCase):
     """“浏览N秒可领”要求徽标解析（真机 2026-08-29：浏览25秒可领，右上角）。"""

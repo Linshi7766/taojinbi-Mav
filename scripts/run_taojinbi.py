@@ -47,6 +47,8 @@ from taojinbi_mav.ocr_ui import (
     read_safe_browse_progress,
     screen_text_signature,
     scroll_to_top_then_find,
+    ScanOutcome,
+    ScanStatus,
     titles_equivalent,
 )
 from taojinbi_mav.runtime.ocr_service import make_sidecar_reader_factory
@@ -296,17 +298,49 @@ def on_task_list(d, reader):
     return in_taobao_and_safe(d, spans) and any(LIST_ANCHOR in s.text for s in spans)
 
 
+def read_task_list_state(d, reader):
+    """读一屏并判定回退单步状态（Codex P0-3 四态化的单屏判定）。
+
+    返回：
+    - ``"on_list"``：在安全淘宝页面且看到任务列表锚点；
+    - ``"off_list"``：在安全淘宝页面但尚未看到列表锚点（唯一允许按返回）；
+    - ``"blocked"``：OCR 读取失败或前台非淘宝/出现风控词（fail-closed，
+      绝不按返回）。
+    """
+    spans = ocr_screen(d, reader)
+    if spans is None:
+        return "blocked"
+    if not in_taobao_and_safe(d, spans):
+        return "blocked"
+    if any(LIST_ANCHOR in span.text for span in spans):
+        return "on_list"
+    return "off_list"
+
+
 def back_to_task_list_ocr(d, reader, max_backs=MAX_BACKS, deadline=None):
-    """按返回键直到 OCR 判定回到任务列表；失败关闭。每次动作/等待走 deadline。"""
-    for _ in range(max_backs):
+    """按返回键直到 OCR 判定回到任务列表；失败关闭。每次动作/等待走 deadline。
+
+    Codex P0-3（第 2 轮状态语义重构）：每一步先做显式安全判定——OCR 读取
+    失败，或前台离开淘宝/出现风控词（``blocked``）时立即停止并返回 False，
+    绝不盲目按返回（避免越界退出应用或在风险页面误操作）；只有“在安全淘宝
+    页面、但尚未看到列表锚点”（``off_list``）才允许按一次返回。
+    """
+    for _ in range(max(0, max_backs)):
         _checkpoint(deadline)
-        if on_task_list(d, reader):
+        state = read_task_list_state(d, reader)
+        _checkpoint(deadline)
+        if state == "on_list":
             return True
+        if state == "blocked":
+            print("返回任务列表：OCR 失败或不在安全淘宝页面，停止按返回（fail-closed）")
+            return False
         _checkpoint(deadline)
         d.press("back")
         _checkpoint(deadline)
         _deadline_sleep(deadline, SWIPE_SETTLE)
-    return on_task_list(d, reader)
+    # 预算用尽后只做一次只读判定，不再按返回
+    _checkpoint(deadline)
+    return read_task_list_state(d, reader) == "on_list"
 
 
 def on_coin_page(d, reader):
@@ -400,11 +434,18 @@ def refresh_task_after_disappearance(
         if not loaded:
             continue
         _popup_scroll(d, screen, deadline=deadline)
-        target = locate_safe_browse_target(
+        scan = locate_safe_browse_target(
             d, reader, screen, only_titles=(title,), deadline=deadline,
         )
-        if target is None:
+        if scan.is_blocking:
+            # 离开淘宝/风控/OCR 失败：失败关闭，绝不继续滚动刷新
+            reason = ("ocr_unavailable" if scan.status == ScanStatus.OCR_FAILED
+                      else "unsafe_screen")
+            print(f"刷新恢复扫描被阻断（{reason}），失败关闭")
+            return RefreshRecoveryResult("blocked", attempts=attempt, reason=reason)
+        if not scan.is_found:
             continue
+        target = scan.target
         status, reason = classify_refreshed_task(
             target,
             expected_progress=expected_progress,
@@ -445,12 +486,15 @@ def locate_immersive_target(d, reader, screen, max_scrolls=MAX_LIST_SCROLLS,
         _checkpoint(deadline)
         spans = ocr_screen(d, reader)
         _checkpoint(deadline)
+        if spans is None:
+            return ScanOutcome.ocr_failed()
         if not in_taobao_and_safe(d, spans):
-            return None, None
-        return (
-            find_immersive_target(spans, screen),
-            screen_text_signature(spans),
-        )
+            return ScanOutcome.unsafe()
+        target = find_immersive_target(spans, screen)
+        signature = screen_text_signature(spans)
+        if target is None:
+            return ScanOutcome.not_found(signature)
+        return ScanOutcome.found(target, signature)
 
     def scroll():
         _popup_scroll(d, screen, deadline=deadline)
@@ -468,11 +512,16 @@ def locate_immersive_progress(d, reader, screen, max_scrolls=MAX_LIST_SCROLLS,
         _checkpoint(deadline)
         spans = ocr_screen(d, reader)
         _checkpoint(deadline)
+        if spans is None:
+            return ScanOutcome.ocr_failed()
         if not in_taobao_and_safe(d, spans):
-            return None, None
+            return ScanOutcome.unsafe()
+        # value 为 int（含 0）表示命中进度行
         value = find_immersive_progress(spans)
-        # 用 (value, sig) 交给 locate_by_scroll；value 为 int（含 0）表示命中
-        return value, screen_text_signature(spans)
+        signature = screen_text_signature(spans)
+        if value is None:
+            return ScanOutcome.not_found(signature)
+        return ScanOutcome.found(value, signature)
 
     def scroll():
         _popup_scroll(d, screen, deadline=deadline)
@@ -516,10 +565,16 @@ def retry_entry_validation(
 def enter_immersive_from_list(d, reader, deadline=None):
     """滚动定位“好物沉浸看”，点前在静止屏重定位（动态坐标）后点击“去完成”。"""
     screen = d.window_size()
+    blocked = {"reason": None}
     def locate_and_validate():
-        target = locate_immersive_target(d, reader, screen, deadline=deadline)
-        if target is None:
+        scan = locate_immersive_target(d, reader, screen, deadline=deadline)
+        if scan.is_blocking:
+            blocked["reason"] = scan.status
             return None
+        blocked["reason"] = None
+        if not scan.is_found:
+            return None
+        target = scan.target
         # 每次重试都重新截图、重新定位，绝不复用上一次的 OCR 坐标。
         _checkpoint(deadline)
         spans = ocr_screen(d, reader)
@@ -537,6 +592,9 @@ def enter_immersive_from_list(d, reader, deadline=None):
         sleeper=lambda seconds: _deadline_sleep(deadline, seconds),
         checkpoint=lambda: _checkpoint(deadline),
     )
+    if blocked["reason"] is not None:
+        print(f"好物沉浸看：扫描被阻断（{blocked['reason']}），失败关闭")
+        return False
     if target2 is None:
         print("好物沉浸看：入口二次校验连续失败，失败关闭")
         return False
@@ -557,10 +615,13 @@ def run_immersive_goods_task_ocr(d, reader, back_to_list=None, target_progress=5
 
     def read_progress():
         # 只认“好物沉浸看”自身进度（精确标题 + 滚动查找，不依赖按钮，完成态 5/5 也能读）
-        value = locate_immersive_progress(
+        scan = locate_immersive_progress(
             d, reader, screen, deadline=deadline,
         )
-        return f"{value}/{target_progress}" if value is not None else None
+        if not scan.is_found:
+            return None
+        value = scan.target
+        return f"{value}/{target_progress}"
 
     def still_allowed():
         _checkpoint(deadline)
@@ -620,12 +681,17 @@ def locate_safe_browse_target(d, reader, screen, only_titles=None,
         _checkpoint(deadline)
         spans = ocr_screen(d, reader)
         _checkpoint(deadline)
+        if spans is None:
+            return ScanOutcome.ocr_failed()
         if not in_taobao_and_safe(d, spans):
-            return None, None
+            return ScanOutcome.unsafe()
         target = find_safe_browse_target(
             spans, screen, only_titles=only_titles, exclude_titles=exclude_titles,
         )
-        return target, screen_text_signature(spans)
+        signature = screen_text_signature(spans)
+        if target is None:
+            return ScanOutcome.not_found(signature)
+        return ScanOutcome.found(target, signature)
 
     return scroll_to_top_then_find(
         probe,
@@ -646,9 +712,15 @@ def locate_task_progress(d, reader, screen, title, max_scrolls=MAX_LIST_SCROLLS,
         _checkpoint(deadline)
         spans = ocr_screen(d, reader)
         _checkpoint(deadline)
+        if spans is None:
+            return ScanOutcome.ocr_failed()
         if not in_taobao_and_safe(d, spans):
-            return None, None
-        return read_safe_browse_progress(spans, title), screen_text_signature(spans)
+            return ScanOutcome.unsafe()
+        pair = read_safe_browse_progress(spans, title)
+        signature = screen_text_signature(spans)
+        if pair is None:
+            return ScanOutcome.not_found(signature)
+        return ScanOutcome.found(pair, signature)
 
     return scroll_to_top_then_find(
         probe,
@@ -662,16 +734,22 @@ def enter_task_from_list(d, reader, title, deadline=None):
     """滚动定位标题（含轮换等价）任务，点前静止屏重定位后点击其动作按钮。"""
     screen = d.window_size()
     label = safe_task_label(title)
+    blocked = {"reason": None}
     def locate_and_validate():
-        target = locate_safe_browse_target(
+        scan = locate_safe_browse_target(
             d,
             reader,
             screen,
             only_titles=(title,),
             deadline=deadline,
         )
-        if target is None or not titles_equivalent(target.title, title):
+        if scan.is_blocking:
+            blocked["reason"] = scan.status
             return None
+        blocked["reason"] = None
+        if not scan.is_found or not titles_equivalent(scan.target.title, title):
+            return None
+        target = scan.target
         _checkpoint(deadline)
         spans = ocr_screen(d, reader)
         _checkpoint(deadline)
@@ -694,6 +772,9 @@ def enter_task_from_list(d, reader, title, deadline=None):
         sleeper=lambda seconds: _deadline_sleep(deadline, seconds),
         checkpoint=lambda: _checkpoint(deadline),
     )
+    if blocked["reason"] is not None:
+        print(f"{label}：扫描被阻断（{blocked['reason']}），失败关闭")
+        return False
     if target2 is None:
         print(f"{label}：入口二次校验连续失败，失败关闭")
         return False
@@ -717,7 +798,10 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
     label = safe_task_label(title)
     screen = d.window_size()
     last_progress = {"value": None, "total": total}
-    entered = {"count": 0}   # 记录是否真的进入并浏览过（用于诚实上报）
+    # 证据链（Codex P0-4，第 2 轮 2B）：entered 只代表点进信息流；
+    # browse_completed 才代表完整浏览往返（进入→策略浏览→退出结算→重开弹窗）。
+    # likely_completed 只认 browse_completed 及以上，纯 entered 不谎报已浏览。
+    evidence = {"entered": 0, "browse_completed": 0}
     progress_state = {
         "after_return": False,
         "full_scan_used": False,
@@ -746,14 +830,21 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
 
     def read_full_progress():
         _checkpoint(deadline)
-        pair = locate_task_progress(
+        scan = locate_task_progress(
             d, reader, screen, title, deadline=deadline,
         )
         _checkpoint(deadline)
-        if pair is None:
+        if scan.is_blocking:
+            progress_state["last_read_reason"] = (
+                "ocr_unavailable" if scan.status == ScanStatus.OCR_FAILED
+                else "unsafe_screen"
+            )
+            return None
+        if not scan.is_found:
             if progress_state["last_read_reason"] == "not_started":
                 progress_state["last_read_reason"] = "task_row_unobserved"
             return None
+        pair = scan.target
         progress_state["last_read_reason"] = "ok"
         last_progress["value"] = pair[0]
         last_progress["total"] = pair[1]
@@ -782,7 +873,7 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
         if not enter_task_from_list(d, reader, title, deadline=deadline):
             print(f"{label}：无法定位并进入信息流，失败关闭")
             return False
-        entered["count"] += 1
+        evidence["entered"] += 1
         _deadline_sleep(deadline, SWIPE_SETTLE)
         strategy = select_task_strategy(profile)
         if strategy is None:
@@ -824,6 +915,7 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
             )
             return False
         progress_state["after_return"] = True
+        evidence["browse_completed"] += 1
         return True
 
     refresh_attempts_used = 0
@@ -839,7 +931,7 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
             sleeper=lambda seconds: _deadline_sleep(deadline, seconds),
             checkpoint=lambda: _checkpoint(deadline),
         )
-        browsed = entered["count"] > 0
+        browsed = evidence["browse_completed"] > 0
         remaining_refreshes = REFRESH_RECOVERY_ATTEMPTS - refresh_attempts_used
         if (
             result.reason != "task_row_unobserved"
@@ -847,7 +939,7 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
             or remaining_refreshes <= 0
         ):
             break
-        grace_pending = entered["count"] > 0
+        grace_pending = evidence["browse_completed"] > 0
         resumed = False
         while True:
             # 每次尝试前重算剩余预算：宽限不得重置预算（全局两次上限）。
@@ -915,7 +1007,9 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
         if resumed:
             continue
         break
-    browsed = entered["count"] > 0   # 是否真的进入并浏览过（供汇总口径一致）
+    # 汇总口径的 browsed 严格表示“完成过完整浏览往返”；仅点进信息流但
+    # 往返中途失败（no_safe_control 等）不计 browsed，避免误报 likely_completed。
+    browsed = evidence["browse_completed"] > 0
     display_total = result.total_changes[-1][1] if result.total_changes else total
     for before, after in result.transitions:
         if profile.allow_dynamic_total:
@@ -936,7 +1030,7 @@ def run_one_safe_browse_task(d, reader, title, total, deadline=None,
     elif result.reason == "missing_progress" and browsed and total == 1:
         # 已进入并浏览过、回来读不到进度：短任务(0/1)完成后行会消失/变已完成，
         # 不能说“未执行”，如实报“已浏览、很可能完成”
-        print(f"{label}：已进入并浏览 {entered['count']} 轮，返回后读不到进度——"
+        print(f"{label}：已完整浏览 {evidence['browse_completed']} 轮，返回后读不到进度——"
               "短任务很可能已完成，请核对金币余额")
     elif result.reason == "task_row_unobserved" and browsed:
         print(
@@ -1363,16 +1457,25 @@ def run_safe_browse_tasks(d, reader, max_tasks=8, run_deadline=None,
     screen = d.window_size()
     attempted = set()
     done, likely_done, unfinished = [], [], []
+    scan_blocked = {"reason": None}
     try:
         for _ in range(max_tasks):
             _checkpoint(run_deadline)
-            target = locate_safe_browse_target(
+            scan = locate_safe_browse_target(
                 d, reader, screen, only_titles=only_titles,
                 exclude_titles=tuple(attempted),
                 deadline=run_deadline,
             )
-            if target is None:
+            if scan.is_blocking:
+                scan_blocked["reason"] = (
+                    "ocr_unavailable" if scan.status == ScanStatus.OCR_FAILED
+                    else "unsafe_screen"
+                )
+                print(f"任务扫描被阻断（{scan_blocked['reason']}），停止本轮")
                 break
+            if not scan.is_found:
+                break
+            target = scan.target
             attempted.add(target.title)
             label = safe_task_label(target.title)
             print(f"发现安全浏览任务：{label} {target.progress}/{target.total}")
@@ -1443,6 +1546,10 @@ def run_safe_browse_tasks(d, reader, max_tasks=8, run_deadline=None,
             # 单任务边界：任何非 completed 结果都必须先人工核对，
             # 不能因为任务行消失、OCR 漏读或“很可能完成”而继续点击下一项。
             break
+        # 扫描阶段遇安全阻断（离开淘宝/风控/OCR 失败）：如实计入未完成，
+        # 绝不把它当成“列表已扫完、无更多任务”的正常空结果。
+        if scan_blocked["reason"] is not None:
+            unfinished.append(f"扫描中断({scan_blocked['reason']})")
         # 正常收尾：尽力退出到淘金币首页（赚更多金币界面），便于刷新后续任务
         _settle_back_to_coin_page(d, reader, run_deadline)
     except DeadlineExceeded as error:

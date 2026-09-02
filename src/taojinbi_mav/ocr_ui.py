@@ -65,15 +65,6 @@ CHECKIN_POPUP_MARKERS = ("签到",)
 # 签到弹窗的领取按钮文案（按优先级匹配，首个精确唯一命中即点）
 # 待真机校准（用户 9/2 首开取样后确认实际文案）
 CHECKIN_CLAIM_WORDS = ("立即领取", "签到领币", "领取奖励", "领取")
-# 结果页里不是商品标题的噪声（奖励条/搜索框/促销标签等，点了进不了详情）
-RESULT_TILE_NOISE = (
-    "搜索", "可领", "浏览", "淘金币", "金币", "已抵", "立减", "下单",
-    "正品", "七天", "退换", "包邮", "旗舰", "官方", "保证", "免费",
-    "直供", "回买", "声索赔", "￥", "¥",
-    # 淘宝偶发错误页文案（真机见“系统出了点问题”被当商品点）
-    "系统出了", "点问题", "重新加载", "稍后再试", "网络异常",
-)
-
 # 注册任务 key → dry-run/execute 共享的稳定内部标识（绝不携带轮换标题）
 TASK_KEYS = {
     "search": "search_discovery",
@@ -704,44 +695,6 @@ def is_taobao_home_page(spans):
     return (tab_hits >= 2 and footer_hits >= 2), has_coin_entry
 
 
-def find_result_product_candidates(spans, screen_size,
-                                   top_ratio=0.30, bottom_ratio=0.85,
-                                   min_len=6):
-    """返回搜索结果页可点进详情的商品标题候选（按 y 升序）。
-
-    商品标题特征：位于奖励条/搜索框之下（top_ratio 以下）、屏幕中下部安全区内、
-    文本较长、不含价格/促销/奖励条噪声词。点其中心即进入对应商品详情页。
-    """
-    width, height = screen_size
-    candidates = [
-        span for span in spans
-        if height * top_ratio < span.center[1] < height * bottom_ratio
-        and len(span.text) >= min_len
-        and not any(marker in span.text for marker in RESULT_TILE_NOISE)
-        and is_safe_tap_point(span.center, screen_size)
-    ]
-    return sorted(candidates, key=lambda span: span.center[1])
-
-
-def find_discovery_candidates(spans, screen_size):
-    """返回"搜索发现"栏下方可随机点击的真实推荐词候选。
-
-    以"搜索发现"区块标题的 y 为界，取其严格下方、落在安全点击区、且非广告/区块
-    元信息噪声的段；随机点其一即对该词发起搜索并进入结果流。无区块标题时返回 []。
-    """
-    anchors = [s for s in spans if SEARCH_DISCOVERY_ANCHOR in s.text]
-    if not anchors:
-        return []
-    header_y = min(anchor.center[1] for anchor in anchors)
-    return [
-        span for span in spans
-        if span.center[1] > header_y
-        and SEARCH_DISCOVERY_ANCHOR not in span.text
-        and not _is_search_noise(span.text)
-        and is_safe_tap_point(span.center, screen_size)
-    ]
-
-
 # ---------------------------------------------------------------------------
 # P0-1 两帧安全边界：结构化区域 + 第一行限定 + 第二帧重定位。
 # 设计来自 Codex 第二轮核验（DiscoveryRegion / DiscoveryCandidate）。
@@ -914,34 +867,84 @@ def screen_text_signature(spans):
     return frozenset(span.text for span in spans)
 
 
+class ScanStatus:
+    """扫描结果四态（Codex P0-3，第 2 轮状态语义重构）。"""
+
+    FOUND = "found"            # 在安全页面找到目标
+    NOT_FOUND = "not_found"    # 安全页面但本屏无目标：唯一允许继续滚动/返回的状态
+    UNSAFE = "unsafe"          # 离开淘宝包或出现风控词：立即 fail-closed
+    OCR_FAILED = "ocr_failed"  # 截图/OCR/解析失败：立即 fail-closed
+
+
+@dataclass(frozen=True)
+class ScanOutcome:
+    """一次滚动扫描的结果；只有 not_found 允许控制器继续滚动。"""
+
+    status: str
+    target: object = None
+    signature: object = None
+
+    @classmethod
+    def found(cls, target, signature=None):
+        return cls(ScanStatus.FOUND, target=target, signature=signature)
+
+    @classmethod
+    def not_found(cls, signature=None):
+        return cls(ScanStatus.NOT_FOUND, signature=signature)
+
+    @classmethod
+    def unsafe(cls):
+        return cls(ScanStatus.UNSAFE)
+
+    @classmethod
+    def ocr_failed(cls):
+        return cls(ScanStatus.OCR_FAILED)
+
+    @property
+    def is_found(self):
+        return self.status == ScanStatus.FOUND
+
+    @property
+    def is_blocking(self):
+        """unsafe / ocr_failed：禁止继续滚动或按返回，上层必须 fail-closed。"""
+        return self.status in (ScanStatus.UNSAFE, ScanStatus.OCR_FAILED)
+
+
 def _find_until_scroll_stable(probe, scroll, max_scrolls=8):
-    """滚动查找直到命中或连续两次滑动后签名不变。"""
+    """滚动查找直到命中、遇到阻断态、或连续两次滑动后签名不变。
+
+    ``probe()`` 返回 :class:`ScanOutcome`：
+    - ``found``：立即返回该结果；
+    - ``unsafe`` / ``ocr_failed``：立即返回该结果，绝不继续滚动（fail-closed）；
+    - ``not_found``：按屏幕指纹判断是否到底，未到底则滚动一次继续。
+
+    到底（连续两次签名不变）或超过 ``max_scrolls`` 仍未命中，返回 not_found。
+    最多 probe ``max_scrolls + 1`` 次、scroll ``max_scrolls`` 次。
+    """
     last_signature = None
     unchanged_swipes = 0
     for attempt in range(max_scrolls + 1):
-        found, signature = probe()
-        if found is not None:
-            return found
-        if signature == last_signature:
+        outcome = probe()
+        if outcome.is_found or outcome.is_blocking:
+            return outcome
+        if outcome.signature == last_signature:
             unchanged_swipes += 1
         else:
             unchanged_swipes = 0
-        last_signature = signature
+        last_signature = outcome.signature
         if unchanged_swipes >= 2:
-            return None
+            return ScanOutcome.not_found()
         if attempt < max_scrolls:
             scroll()
-    return None
+    return ScanOutcome.not_found()
 
 
 def locate_by_scroll(probe, scroll, max_scrolls=8):
     """通用滚动查找控制器（纯逻辑，靠回调驱动，便于离线测试）。
 
-    - ``probe() -> (found, signature)``：``found`` 非 None 即命中目标并返回；
-      ``signature`` 为当前屏文本指纹。
-    - ``scroll()``：执行一次滚动（副作用）。
-    连续两次滑动后屏幕指纹仍相同（判定到底）或超过 ``max_scrolls`` 仍未命中，
-    则失败关闭返回 None。最多 probe ``max_scrolls + 1`` 次、scroll ``max_scrolls`` 次。
+    ``probe() -> ScanOutcome``；返回值同为 :class:`ScanOutcome`，调用方按
+    ``status`` 分支：found 取 ``target``，unsafe/ocr_failed 立即失败关闭，
+    not_found 才表示列表确实扫完无目标。
     """
     return _find_until_scroll_stable(probe, scroll, max_scrolls=max_scrolls)
 
@@ -949,13 +952,10 @@ def locate_by_scroll(probe, scroll, max_scrolls=8):
 def scroll_to_top_then_find(probe, scroll_up, scroll_down, max_scrolls=8):
     """先上滚到顶，再从顶向下逐屏查找目标（全覆盖，避免漏掉上方任务）。
 
-    - ``probe() -> (found, signature)``：found 非 None 立即返回（两个阶段都机会命中）。
-    - ``scroll_up()`` / ``scroll_down()``：一次上滚 / 下滚（副作用）。
-    连续两次滑动后签名仍相同才视为到顶/到底。任一阶段命中即返回 found；
-    全程未命中返回 None。
+    ``probe() -> ScanOutcome``。任一阶段 found 或遇到阻断态（unsafe/
+    ocr_failed）立即返回，绝不进入/继续另一阶段；全程未命中返回 not_found。
     """
-    # 阶段1：上滚到顶；阶段2：从顶向下逐屏查找。
-    found = _find_until_scroll_stable(probe, scroll_up, max_scrolls=max_scrolls)
-    if found is not None:
-        return found
+    outcome = _find_until_scroll_stable(probe, scroll_up, max_scrolls=max_scrolls)
+    if outcome.is_found or outcome.is_blocking:
+        return outcome
     return _find_until_scroll_stable(probe, scroll_down, max_scrolls=max_scrolls)
