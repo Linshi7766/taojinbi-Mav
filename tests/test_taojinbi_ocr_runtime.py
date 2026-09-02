@@ -2545,6 +2545,46 @@ class DailyCheckinHandlerTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(device.tap_count, 0)
 
+    def test_signin_entry_tap_completes_checkin(self):
+        # 根页"签到领金币"入口：点击 → 入口消失（变"赚更多金币"）→ True
+        with_signin = [
+            (_box(220, 138), "淘金币", 0.99),
+            (_box(536, 649), "签到领金币", 0.98),
+        ]
+        settled = [
+            (_box(220, 138), "淘金币", 0.99),
+            (_box(537, 599), "赚更多金币", 0.97),
+        ]
+        reader = _SequenceReader([with_signin, settled, settled])
+        device = _ActionDevice()
+        result = runtime._handle_daily_checkin(device, reader)
+        self.assertTrue(result)
+        self.assertEqual(device.tap_count, 1)
+        self.assertEqual(device.last_tap, (536, 649))
+
+    def test_signin_entry_absent_skips(self):
+        # 根页无"签到领金币"入口：跳过（正常路径），零点击
+        spans = [
+            (_box(220, 138), "淘金币", 0.99),
+            (_box(537, 599), "赚更多金币", 0.97),
+        ]
+        reader = _SequenceReader([spans])
+        device = _ActionDevice()
+        self.assertTrue(runtime._handle_daily_checkin(device, reader))
+        self.assertEqual(device.tap_count, 0)
+
+    def test_signin_entry_tap_but_not_settled_returns_false(self):
+        # 点击后入口一直没消失（签到未完成）→ False（不谎报完成）
+        with_signin = [
+            (_box(220, 138), "淘金币", 0.99),
+            (_box(536, 649), "签到领金币", 0.98),
+        ]
+        reader = _SequenceReader([with_signin, with_signin, with_signin])
+        device = _ActionDevice()
+        result = runtime._handle_daily_checkin(device, reader)
+        self.assertFalse(result)
+        self.assertEqual(device.tap_count, 1)
+
 
 class NavigateHomeToCoinPageTests(unittest.TestCase):
     """_navigate_home_to_coin_page：淘宝首页 → 淘金币根页自动导航。"""

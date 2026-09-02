@@ -98,6 +98,8 @@ REFRESH_RECOVERY_ATTEMPTS = 2
 COIN_PAGE_ANCHOR = "淘金币"
 MORE_COINS_ACTION = "赚更多金币"
 POPUP_CLOSE_CONTROL = "更多"   # 任务弹窗右上角关闭控件（OCR 可读，真机 2026-08-29 用户演示验证）
+SIGNIN_ENTRY = "签到领金币"    # 淘金币根页签到入口：点击即完成每日签到（+120 到账，真机 2026-09-02 证实）
+SIGNIN_SETTLE_S = 3            # 点击签到入口后等待完成的观察窗口
 
 # dry-run 行判定 task_key（稳定内部标识）→ 日志 TASK_LABELS 键（脱敏标签键）
 _DRY_RUN_LOG_KEY = {value: key for key, value in TASK_KEYS.items()}
@@ -1013,20 +1015,21 @@ def _checkin_popup_gone(d, reader):
 
 
 def _handle_daily_checkin(d, reader, deadline=None):
-    """处理每日签到弹窗：检测 → 找领取按钮 → safe_tap → 等弹窗消失。
+    """处理每日签到：入口点击或弹窗领取，均以安全点击 + 重新读屏验证。
 
-    真机 2026-09-01 用户反馈：每天首次打开“赚淘金币”页面会先弹每日签到
-    弹窗（+130 金币），该弹窗遮挡任务列表，会让后续 on_task_list 判定失败、
-    “赚更多金币”按钮不可见，最终 list_anchor_missing 启动失败。
+    真机 2026-09-02 证实签到真实形态：
+    - 淘金币根页有"签到领金币"入口，点击即完成每日签到（+120 到账），
+      完成后入口变为"赚更多金币"（幂等：次日入口重现）；
+    - 早期推测的独立签到弹窗（"立即领取"按钮）为另一形态，仍保留处理。
 
     安全约束（与既有入口动作一致）：
     - 每步先 in_taobao_and_safe，不安全立即失败关闭；
-    - 领取按钮必须 find_unique_ocr_span 精确唯一（歧义零点击）；
+    - 入口/按钮必须 find_unique_ocr_span 精确唯一（歧义零点击）；
     - 坐标经 safe_tap 安全区校验；
-    - 点击后重新读屏验证弹窗消失，不假设成功。
+    - 点击后重新读屏验证签到完成/弹窗消失，不假设成功。
 
     **失败不阻塞**：签到是锦上添花而非主流程，返回 False 时上层继续走
-    后续导航/任务流程，绝不因此中断整次运行。无签到弹窗时返回 True。
+    后续导航/任务流程，绝不因此中断整次运行。无签到入口/弹窗时返回 True。
     """
     try:
         max_attempts = ENTRY_VALIDATION_RETRIES + 1
@@ -1035,6 +1038,23 @@ def _handle_daily_checkin(d, reader, deadline=None):
             spans = ocr_screen(d, reader)
             if not in_taobao_and_safe(d, spans):
                 return False
+            # 1) 根页"签到领金币"入口：点击即完成签到（真机 2026-09-02 证实
+            #    +120 到账、入口变"赚更多金币"）
+            entry = find_unique_ocr_span(spans, SIGNIN_ENTRY)
+            if entry is not None:
+                screen = d.window_size()
+                if not safe_tap(d, entry.center, screen):
+                    return False
+                # 等待签到完成：入口从屏幕消失（变"赚更多金币"）
+                for _ in range(ENTRY_VALIDATION_RETRIES + 1):
+                    _deadline_sleep(deadline, SIGNIN_SETTLE_S)
+                    settled = ocr_screen(d, reader)
+                    if not in_taobao_and_safe(d, settled):
+                        return False
+                    if find_unique_ocr_span(settled, SIGNIN_ENTRY) is None:
+                        return True   # 签到完成
+                return False
+            # 2) 独立签到弹窗（旧形态，保留）
             if not is_daily_checkin_popup(spans):
                 return True   # 无签到弹窗：无需处理（正常路径）
             claim = find_checkin_claim_button(spans)
