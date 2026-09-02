@@ -11,7 +11,10 @@ bbox_points 为 4 个 [x, y] 角点。
 import json
 import unittest
 
-from taojinbi_mav.task_core import UNSAFE_ACTION_MARKERS
+from taojinbi_mav.task_core import (
+    EXTERNAL_APP_MARKERS,
+    UNSAFE_ACTION_MARKERS,
+)
 from taojinbi_mav import ocr_ui
 from taojinbi_mav.ocr_ui import (
     OcrSpan,
@@ -713,6 +716,28 @@ class SafeBrowseTargetTests(unittest.TestCase):
                 self.assertIsNone(
                     find_safe_browse_target(spans, self.SCREEN)
                 )
+
+    def test_every_external_app_marker_rejects_registered_search_title(self):
+        # 补回 P2 死代码清理（d11c5dd）连带删掉的外部 app 拒绝覆盖：
+        # 生产 ocr_ui.find_safe_browse_target 仍用 EXTERNAL_APP_MARKERS
+        # 挡住"去支付宝农场逛逛"一类任务（真机 2026-09-02 弹窗实测存在 4 条），
+        # 必须有遍历测试防止判定顺序被改坏却无人察觉。
+        for marker in EXTERNAL_APP_MARKERS:
+            with self.subTest(marker=marker):
+                spans = parse_ocr_spans(
+                    self._row(300, f"搜一搜{marker}(0/5)", desc="")
+                )
+                self.assertIsNone(
+                    find_safe_browse_target(spans, self.SCREEN)
+                )
+
+    def test_external_app_marker_overrides_browse_evidence(self):
+        # 外部 app 标记优先于浏览证据：即使行内带"浏览"描述也不放行
+        # （对应被删的 test_rejects_external_app_even_when_browse_marker_exists）
+        spans = parse_ocr_spans(
+            self._row(300, "去支付宝农场逛逛哟(0/1)", desc="点击去逛")
+        )
+        self.assertIsNone(find_safe_browse_target(spans, self.SCREEN))
 
     def test_featured_goods_action_cannot_supply_browse_description(self):
         spans = parse_ocr_spans(
