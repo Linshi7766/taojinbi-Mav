@@ -29,6 +29,7 @@ TASK_LABELS = {
     "search": "搜一搜…",
     "hashtag": "看看#…",
     "featured_goods": "发现精选好物",
+    "immersive": "好物沉浸看",
 }
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9_]*$")
 
