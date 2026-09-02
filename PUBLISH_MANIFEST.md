@@ -3,9 +3,9 @@
 > 2026-08-28 更名：仓库名 `coin11-tb` → `taojinbi-Mav`，Python 包 `coin11_tb` → `taojinbi_mav`；本清单与导出内容已同步。
 
 生成时间：2026-09-02
-验证：2026-09-02 复验（代码树 HEAD `963c482`；命令
+验证：2026-09-02 复验（代码树 HEAD `6df23e6`；命令
 `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"`；
-Python 3.13 / Windows），导出目录离线测试 **499/499** 通过。
+Python 3.13 / Windows），导出目录离线测试 **501/501** 通过。
 
 本次同步 Codex 只读安全审计第 2/3 轮：扫描结果四态化（unsafe/OCR 失败绝不
 滚动或按返回）、likely_completed 证据链收紧、死代码清理、文档与四任务+签到
