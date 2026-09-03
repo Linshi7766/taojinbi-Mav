@@ -3,16 +3,16 @@
 > 2026-08-28 更名：仓库名 `coin11-tb` → `taojinbi-Mav`，Python 包 `coin11_tb` → `taojinbi_mav`；本清单与导出内容已同步。
 
 生成时间：2026-09-02
-验证：2026-09-02 复验（代码树 HEAD `6df23e6`；命令
+验证：2026-09-02 复验（代码树 HEAD `7538044`；命令
 `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"`；
-Python 3.13 / Windows），导出目录离线测试 **501/501** 通过。
+Python 3.13 / Windows），导出目录离线测试 **511/511** 通过。
 
 本次同步 Codex 只读安全审计第 2/3 轮：扫描结果四态化（unsafe/OCR 失败绝不
 滚动或按返回）、likely_completed 证据链收紧、死代码清理、文档与四任务+签到
 行为一致；并移除早期批量脚本 `run_full_round.py` 及其测试。此前 "527/527"
 记录（2026-09-02 第 1 轮，HEAD `9bbf5d2`/`2fe5bb7`）已过时，以本次为准。
 
-## 包含文件（57 个）
+## 包含文件（58 个）
 
 ```text
 ./.github/workflows/offline-tests.yml
