@@ -84,7 +84,97 @@ from taojinbi_mav.tasks.registry import profile_for_title, registered_profiles
 
 TB_APP = "com.taobao.taobao"
 LIST_ANCHOR = "赚金币抵钱"   # 任务列表弹窗标题，作为“在列表”的稳定锚点
-RUNTIME_SHOT = "_ocr_runtime_shot.png"  # 单一临时截图，_ocr_ 前缀已被 gitignore
+
+
+def runtime_shot_path(pid=None):
+    """本次运行的截图临时文件路径（Codex 审计 P1-7）。
+
+    按进程唯一：两进程并发时不会互相覆盖截图（否则会出现 A 进程 OCR 了
+    B 进程截图的错读）。同进程内路径稳定复用，不累积临时垃圾；
+    保留 ``_ocr_`` 前缀以免污染 git 工作区。
+    """
+    return f"_ocr_runtime_shot_{os.getpid() if pid is None else pid}.png"
+
+
+RUNTIME_SHOT = runtime_shot_path()   # _ocr_ 前缀已被 gitignore
+
+
+def device_lock_name(serial):
+    """设备锁文件名（按序列号作用域，序列号只做哈希不落盘原文）。"""
+    import hashlib
+
+    digest = hashlib.sha256(str(serial).encode("utf-8")).hexdigest()[:16]
+    return f"_taojinbi_lock_{digest}.lock"
+
+
+def _default_pid_alive(pid):
+    """进程存活探测（默认实现；测试可注入）。"""
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class DeviceLock:
+    """已持有的设备锁句柄；release() 幂等释放。"""
+
+    path: Path
+
+    def release(self):
+        try:
+            self.path.unlink()
+        except Exception:
+            pass   # 释放失败不覆盖主流程结果
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
+        return False
+
+
+def acquire_device_lock(serial, lock_dir=None, pid=None, pid_alive=None):
+    """按设备序列号建立单实例锁；已有存活实例则失败关闭返回 None。
+
+    Codex 审计 P1-7：同一台手机同时只允许一个实例操作。锁文件记录持有者
+    pid；持有者进程已死（上次崩溃残留）时允许接管，避免永久卡死，但
+    **绝不抢占存活实例**。任何异常（含文件系统不可用）都返回 None，
+    由调用方决定是继续（无锁）还是停止。
+    """
+    import tempfile as _tempfile
+
+    try:
+        folder = Path(lock_dir) if lock_dir is not None else Path(
+            _tempfile.gettempdir()
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / device_lock_name(serial)
+        alive = _default_pid_alive if pid_alive is None else pid_alive
+        if path.exists():
+            try:
+                owner = path.read_text(encoding="utf-8").strip()
+            except Exception:
+                owner = ""
+            if owner and alive(owner):
+                return None    # 存活实例持有：绝不抢占
+            try:
+                path.unlink()  # 陈旧锁：接管
+            except Exception:
+                return None
+        # 原子创建（并发竞争时后来的进程创建失败 → None）
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, str(pid if pid is not None else os.getpid()).encode())
+        finally:
+            os.close(fd)
+        return DeviceLock(path)
+    except FileExistsError:
+        return None    # 并发竞争：已有实例持有
+    except Exception:
+        return None
 
 # 阶段 3 经验参数（GPU 加速后可适当收紧等待）
 SWIPE_SETTLE = 2            # 翻页/加载稳定等待（GPU 下 OCR 快，可从 3s 收紧到 2s）
@@ -1776,8 +1866,36 @@ def resolve_reader_factory(reader_factory, sidecar_port):
 def _run_entry(mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
                task_timeout, recovery_timeout, task_key,
                serial, use_gpu, connect, reader_factory, logger, clock, sleeper,
-               ocr_sidecar_port=0):
-    """连接、OCR 初始化与按模式分派；所有异常只映射稳定 reason。"""
+               ocr_sidecar_port=0, lock_dir=None):
+    """单实例锁包装 + 连接/OCR 初始化与按模式分派；异常只映射稳定 reason。"""
+    resolved_serial = resolve_device_serial(serial)
+    if not resolved_serial:
+        # 公开仓库不保存私人设备默认值：序列号缺失时安全失败，
+        # 不尝试连接空设备（避免隐式连上唯一的在线设备）。
+        return RunOutcome(
+            mode, RunStatus.STARTUP_FAILED, "device_serial_missing"
+        )
+    # Codex 审计 P1-7：同一台手机同时只允许一个实例操作；已有存活实例则
+    # 失败关闭（device_busy），绝不并发操控设备。
+    device_lock = acquire_device_lock(resolved_serial, lock_dir=lock_dir)
+    if device_lock is None:
+        return RunOutcome(mode, RunStatus.STARTUP_FAILED, "device_busy")
+    try:
+        return _run_entry_locked(
+            mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
+            task_timeout, recovery_timeout, task_key,
+            resolved_serial, use_gpu, connect, reader_factory, logger,
+            clock, sleeper, ocr_sidecar_port=ocr_sidecar_port,
+        )
+    finally:
+        device_lock.release()
+
+
+def _run_entry_locked(mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
+                      task_timeout, recovery_timeout, task_key,
+                      resolved_serial, use_gpu, connect, reader_factory, logger,
+                      clock, sleeper, ocr_sidecar_port=0):
+    """持锁后的实际执行体（连接、OCR 初始化、按模式分派）。"""
     deadline = Deadline.after(
         dry_run_timeout if dry_run else run_timeout,
         scope="dry_run" if dry_run else "run",
@@ -1788,13 +1906,6 @@ def _run_entry(mode, dry_run, max_tasks, dry_run_timeout, run_timeout,
         import uiautomator2 as u2
 
         connect = u2.connect
-    resolved_serial = resolve_device_serial(serial)
-    if not resolved_serial:
-        # 公开仓库不保存私人设备默认值：序列号缺失时安全失败，
-        # 不尝试连接空设备（避免隐式连上唯一的在线设备）。
-        return RunOutcome(
-            mode, RunStatus.STARTUP_FAILED, "device_serial_missing"
-        )
     try:
         device = connect(resolved_serial)
     except Exception:
@@ -1859,6 +1970,7 @@ def run_ocr_entry(
     log_dir="logs",
     clock=time.monotonic,
     sleeper=time.sleep,
+    lock_dir=None,
 ):
     """Connect and run the OCR entry point with injectable offline boundaries.
 
@@ -1894,6 +2006,7 @@ def run_ocr_entry(
             logger=logger,
             clock=clock,
             sleeper=sleeper,
+            lock_dir=lock_dir,
         )
     except DeadlineExceeded as error:
         scope = getattr(error, "scope", "run") or "run"
