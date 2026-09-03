@@ -1500,6 +1500,34 @@ def _safe_back_to_coin_page(d, reader, max_backs=MAX_BACKS, deadline=None,
     return False
 
 
+def _recover_to_home_and_renavigate(d, reader, screen, deadline=None):
+    """最终兜底：有界 BACK 回到标准淘宝首页（is_home True）。
+
+    遗留 #6（2026-09-03 真机实测）：手机停在 Welcome 启动页/频道子页时
+    ``is_taobao_home_page`` 为 False，首页导航链（_navigate_home_to_coin_page
+    → _reopen_task_popup）全败 → list_anchor_missing。此函数只按返回键，
+    每一步都先确认在淘宝包内且无风控（fail-closed），到达标准首页即停，
+    把"点领淘金币 → 打开弹窗"的决定交回调用方。用尽次数仍非首页则失败。
+    """
+    for _ in range(max(0, MAX_BACKS)):
+        _checkpoint(deadline)
+        spans = ocr_screen(d, reader)
+        if spans is None or not in_taobao_and_safe(d, spans):
+            return False
+        if is_taobao_home_page(spans)[0]:
+            return True
+        _checkpoint(deadline)
+        d.press("back")
+        _checkpoint(deadline)
+        _deadline_sleep(deadline, SWIPE_SETTLE)
+    # 用尽次数后只做一次只读判定，不再按返回
+    _checkpoint(deadline)
+    spans = ocr_screen(d, reader)
+    return bool(spans) and in_taobao_and_safe(
+        d, spans
+    ) and is_taobao_home_page(spans)[0]
+
+
 def _settle_back_to_coin_page(d, reader, deadline=None):
     """正常收尾时退出到淘金币首页（赚更多金币界面），便于刷新后续任务。
 
@@ -1778,38 +1806,48 @@ def _execute_scan(device, reader, max_tasks, logger, mode, task_key=None,
         _checkpoint(run_deadline)
         if not on_list:
             screen = device.window_size()
-            # 1) 尝试从淘宝首页自动导航到淘金币根页（点"领淘金币"图标）
+            navigated = False
+            # 1) 从淘宝首页自动导航到淘金币根页（点"领淘金币"图标）
             if _navigate_home_to_coin_page(
                 device, reader, screen, deadline=run_deadline
             ):
-                # 已在淘金币根页：直接尝试打开弹窗
-                if not _reopen_task_popup(
+                navigated = _reopen_task_popup(
                     device, reader, screen, deadline=run_deadline
-                ):
-                    return RunOutcome(
-                        mode, RunStatus.STARTUP_FAILED, "list_anchor_missing"
-                    )
-            elif not _reopen_task_popup(
+                )
+            elif _reopen_task_popup(
                 device, reader, screen, deadline=run_deadline
             ):
-                # 2) 已在淘金币根页（_reopen_task_popup 失败可能因为按钮抖动）
-                # 走页面感知回退；只在已知流程页按返回，未知页面零动作
-                if not _safe_back_to_coin_page(
-                    device, reader, deadline=run_deadline,
-                    require_action=False,
-                ):
-                    _emit_recovery_diagnostic(
-                        device, reader, logger, "entry_walk_back_failed"
-                    )
-                    return RunOutcome(
-                        mode, RunStatus.STARTUP_FAILED, "list_anchor_missing"
-                    )
-                if not _reopen_task_popup(
+                # 2) 已在淘金币根页（导航首帧可能读不到"领淘金币"图标，
+                # 但 _reopen_task_popup 的根页身份合同直接通过）
+                navigated = True
+            elif _safe_back_to_coin_page(
+                device, reader, deadline=run_deadline,
+                require_action=False,
+            ):
+                # 3) 页面感知回退到根页后重开弹窗（按钮抖动/弹窗未关等）
+                navigated = _reopen_task_popup(
+                    device, reader, screen, deadline=run_deadline
+                )
+            else:
+                _emit_recovery_diagnostic(
+                    device, reader, logger, "entry_walk_back_failed"
+                )
+            if not navigated:
+                # 4) 最终兜底（遗留 #6，2026-09-03 实测）：手机停在 Welcome
+                # 启动页/频道子页/奖励卡片遮挡等导致导航链全败 → 有界 BACK
+                # 回标准淘宝首页，再重走完整导航链
+                if _recover_to_home_and_renavigate(
+                    device, reader, screen, deadline=run_deadline
+                ) and _navigate_home_to_coin_page(
                     device, reader, screen, deadline=run_deadline
                 ):
-                    return RunOutcome(
-                        mode, RunStatus.STARTUP_FAILED, "list_anchor_missing"
+                    navigated = _reopen_task_popup(
+                        device, reader, screen, deadline=run_deadline
                     )
+            if not navigated:
+                return RunOutcome(
+                    mode, RunStatus.STARTUP_FAILED, "list_anchor_missing"
+                )
     except DeadlineExceeded:
         raise   # 统一由 run_ocr_entry 映射为 TIMED_OUT
     except KeyboardInterrupt:
