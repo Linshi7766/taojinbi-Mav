@@ -28,9 +28,14 @@ class RuntimeShotIsolationTests(unittest.TestCase):
             runtime.runtime_shot_path(pid=2222),
         )
 
-    def test_shot_path_keeps_ignored_prefix(self):
-        # 保持 _ocr_ 前缀，否则会污染 git 工作区
-        self.assertIn("_ocr_", runtime.runtime_shot_path(pid=3333))
+    def test_shot_path_lives_outside_workspace(self):
+        # 截图必须落在系统临时目录，绝不在项目工作区（2026-09-04：落项目
+        # 根目录会堆满历史 png，且退出清理触发环境删除保护告警）
+        import tempfile
+
+        shot = Path(runtime.runtime_shot_path(pid=3333)).resolve()
+        self.assertEqual(shot.parent, Path(tempfile.gettempdir()).resolve())
+        self.assertNotIn(str(Path.cwd().resolve()), str(shot))
 
     def test_shot_path_stable_within_process(self):
         # 同进程内必须复用同一路径（不能每帧新建文件累积垃圾）

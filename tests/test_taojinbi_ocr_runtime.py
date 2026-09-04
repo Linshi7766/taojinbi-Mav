@@ -1469,7 +1469,7 @@ class PopupReopenRetryTests(unittest.TestCase):
         with patch.object(
             runtime,
             "ocr_screen",
-            side_effect=[missing] * (runtime.ENTRY_VALIDATION_RETRIES + 2),
+            side_effect=[missing] * (runtime.ENTRY_VALIDATION_RETRIES + 2) * 4,
         ) as read, patch.object(
             runtime, "in_taobao_and_safe", return_value=True
         ) as safe, patch.object(
@@ -1482,7 +1482,9 @@ class PopupReopenRetryTests(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        self.assertEqual(
+        # 按钮缺失：绝不点击。读屏次数含 attempt 0 的下滑探索读屏
+        # （2026-09-04 起入口可能被卡片挤出首屏），故用下界断言
+        self.assertGreaterEqual(
             read.call_count, runtime.ENTRY_VALIDATION_RETRIES + 2
         )
         self.assertEqual(safe.call_count, read.call_count)
@@ -1500,7 +1502,7 @@ class PopupReopenRetryTests(unittest.TestCase):
         with patch.object(
             runtime,
             "ocr_screen",
-            side_effect=[duplicate] * (runtime.ENTRY_VALIDATION_RETRIES + 2),
+            side_effect=[duplicate] * (runtime.ENTRY_VALIDATION_RETRIES + 2) * 4,
         ) as read, patch.object(
             runtime, "in_taobao_and_safe", return_value=True
         ) as safe, patch.object(runtime, "safe_tap") as tap, patch.object(
@@ -1511,7 +1513,9 @@ class PopupReopenRetryTests(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        self.assertEqual(
+        # 按钮缺失：绝不点击。读屏次数含 attempt 0 的下滑探索读屏
+        # （2026-09-04 起入口可能被卡片挤出首屏），故用下界断言
+        self.assertGreaterEqual(
             read.call_count, runtime.ENTRY_VALIDATION_RETRIES + 2
         )
         self.assertEqual(safe.call_count, read.call_count)
@@ -2489,12 +2493,14 @@ class ExitCodeTableTests(unittest.TestCase):
 
 
 class _ActionDevice:
-    """记录 press 与 click 的设备桩（无 deadline 语义）。"""
+    """记录 press / swipe 与 click 的设备桩（无 deadline 语义）。"""
 
     def __init__(self, package=runtime.TB_APP):
         self.package = package
         self.press_count = 0
         self.tap_count = 0
+        self.swipe_count = 0
+        self.last_swipe = None
         self.last_tap = None
 
     def window_size(self):
@@ -2508,6 +2514,10 @@ class _ActionDevice:
 
     def press(self, *_args, **_kwargs):
         self.press_count += 1
+
+    def swipe(self, *args, **_kwargs):
+        self.swipe_count += 1
+        self.last_swipe = args
 
     def click(self, x, y, *_args, **_kwargs):
         self.tap_count += 1
@@ -2870,6 +2880,87 @@ class NavigateHomeToCoinPageTests(unittest.TestCase):
             device, reader, max_backs=2,
         ))
         self.assertEqual(device.press_count, 2)
+
+
+class ReopenTaskPopupScrollTests(unittest.TestCase):
+    """2026-09-04 真机：根页"确认收货奖励"等卡片把"赚更多金币"挤出首屏。
+
+    原 `_reopen_task_popup` 重试只读屏不滚动 → 必然失败；现在允许有界
+    下滑探索找入口，但**拒绝推荐区假入口**（下滑后顶部无"淘金币"锚点
+    即视为已落入推荐区）。
+    """
+
+    SCREEN = (1080, 1920)
+
+    @staticmethod
+    def _root_without_action():
+        # 顶部有"淘金币"锚点，但入口被卡片挤到首屏之外
+        return [
+            (_box(220, 138), "淘金币", 0.99),
+            (_box(305, 251), "确认收货奖励,", 0.95),
+            (_box(602, 251), "淘金币+17", 0.95),
+        ]
+
+    @staticmethod
+    def _root_with_action():
+        return [
+            (_box(220, 138), "淘金币", 0.99),
+            (_box(540, 600), "赚更多金币", 0.97),
+        ]
+
+    @staticmethod
+    def _feed_fake_action():
+        # 推荐区假入口：有"赚更多金币"但顶部无"淘金币"锚点
+        return [
+            (_box(540, 900), "赚更多金币", 0.97),
+            (_box(300, 1200), "话费立减", 0.9),
+        ]
+
+    def test_scroll_finds_action_below_the_fold(self):
+        device = _ActionDevice()
+        reader = _SequenceReader([
+            self._root_without_action(),   # 滑动前安全检查（无入口）
+            self._root_with_action(),      # 下滑一屏后命中入口
+            self._root_with_action(),      # 备用帧
+        ])
+        action = runtime._scroll_coin_page_for_action(
+            device, reader, self.SCREEN,
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(device.swipe_count, 1)
+
+    def test_rejects_feed_fake_action(self):
+        # 下滑后落入推荐区（顶部无"淘金币"锚点）→ 拒绝假入口
+        device = _ActionDevice()
+        reader = _SequenceReader([self._feed_fake_action()] * 4)
+        self.assertIsNone(runtime._scroll_coin_page_for_action(
+            device, reader, self.SCREEN,
+        ))
+
+    def test_stops_outside_taobao(self):
+        device = _ActionDevice(package="com.other.app")
+        reader = _SequenceReader([self._root_without_action()])
+        self.assertIsNone(runtime._scroll_coin_page_for_action(
+            device, reader, self.SCREEN,
+        ))
+        self.assertEqual(device.swipe_count, 0)
+
+    def test_reopen_succeeds_when_action_below_fold(self):
+        # 整体链路：入口被挤出首屏 → 下滑找到 → 点击 → 弹窗打开
+        device = _ActionDevice()
+        reader = _SequenceReader([
+            self._root_without_action(),
+            self._root_without_action(),
+            self._root_with_action(),
+            self._root_with_action(),
+            [(ANCHOR_RAW[0], ANCHOR_RAW[1], ANCHOR_RAW[2])],
+            [(ANCHOR_RAW[0], ANCHOR_RAW[1], ANCHOR_RAW[2])],
+            [(ANCHOR_RAW[0], ANCHOR_RAW[1], ANCHOR_RAW[2])],
+        ])
+        with patch.object(runtime, "on_task_list", return_value=True):
+            result = runtime._reopen_task_popup(device, reader, self.SCREEN)
+        self.assertTrue(result)
+        self.assertEqual(device.tap_count, 1)
 
 
 class RecoverToHomeAndRenavigateTests(unittest.TestCase):

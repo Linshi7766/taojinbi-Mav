@@ -91,10 +91,16 @@ def runtime_shot_path(pid=None):
     """本次运行的截图临时文件路径（Codex 审计 P1-7）。
 
     按进程唯一：两进程并发时不会互相覆盖截图（否则会出现 A 进程 OCR 了
-    B 进程截图的错读）。同进程内路径稳定复用，不累积临时垃圾；
-    保留 ``_ocr_`` 前缀以免污染 git 工作区。
+    B 进程截图的错读）。同进程内路径稳定复用，不累积临时垃圾。
+
+    2026-09-04：路径改到**系统临时目录**——原方案落在项目根目录，每次
+    运行遗留一个 png（实测堆到 37 个），且退出清理会触发环境的文件删除
+    保护告警；放临时目录既零污染也无需项目内删除。
     """
-    return f"_ocr_runtime_shot_{os.getpid() if pid is None else pid}.png"
+    import tempfile
+
+    folder = Path(tempfile.gettempdir())
+    return str(folder / f"taojinbi_ocr_shot_{os.getpid() if pid is None else pid}.png")
 
 
 RUNTIME_SHOT = runtime_shot_path()   # _ocr_ 前缀已被 gitignore
@@ -108,8 +114,10 @@ def _cleanup_runtime_shot(path=None, log=None):
     """
     target = Path(path) if path is not None else Path(RUNTIME_SHOT)
     try:
-        if str(target.parent) in {"", "."}:
-            target.unlink(missing_ok=True)
+        # 只清理当前目录下本次运行自己的截图；先判存在性，避免对不存在
+        # 的文件触发删除（环境中会被拦截并打警告噪音）
+        if str(target.parent) in {"", "."} and target.exists():
+            target.unlink()
     except Exception:
         pass   # 清理失败不覆盖主流程结果
 
@@ -200,6 +208,7 @@ BROWSE_PER_ROUND = 6        # 每个浏览往返覆盖的商品数上限（按�
 MAX_BACKS = 6              # 返回任务列表的最大 back 次数
 REFRESH_LAG_GRACE_S = 120  # 任务行消失后的展示滞后宽限（浏览计数常延迟数分钟反映）
 MAX_LIST_SCROLLS = 8       # 弹窗内滚动查找“好物沉浸看”的最大次数
+ROOT_ACTION_SCROLLS = 2    # 根页下滑探索“赚更多金币”入口的最大次数（卡片占位时）
 ENTRY_VALIDATION_RETRIES = 2  # 入口二次校验最多重试次数，防止 OCR 抖动导致无限循环
 ENTRY_RETRY_DELAY = 0.5       # 重试前短暂等待页面稳定
 
@@ -1203,6 +1212,45 @@ def _scroll_coin_page_to_top(d, screen, deadline=None, max_swipes=3):
         _deadline_sleep(deadline, SWIPE_SETTLE)
 
 
+def _scroll_coin_page_for_action(d, reader, screen, deadline=None,
+                                 max_scrolls=ROOT_ACTION_SCROLLS):
+    """根页有界下滑探索"赚更多金币"入口；只滑不点，安全失败关闭。
+
+    真机 2026-09-04：根页顶部出现"确认收货奖励+17"等卡片时，入口被挤出
+    首屏；原 `_reopen_task_popup` 重试只读屏不滚动 → 必然失败（整轮跑不
+    动）。这里只做有界下滑 + 只读找按钮，绝不点击滚动路径上的任何控件。
+
+    防推荐区假入口：下滑后若顶部 40% 已无"淘金币"锚点（`_is_coin_root_page`
+    判定失败），说明页面已落入推荐区，该入口不采用（推荐卡片上的同名按钮
+    点进去不是任务弹窗）。离开淘宝包或读屏失败同样立即返回 None。
+    """
+    width, height = screen
+    for _ in range(max(0, max_scrolls)):
+        _checkpoint(deadline)
+        # 滑动前先确认安全：非淘宝/风控页绝不滑动
+        spans = ocr_screen(d, reader)
+        if spans is None or not in_taobao_and_safe(d, spans):
+            return None
+        _checkpoint(deadline)
+        d.swipe(
+            width // 2, int(height * 0.70),
+            width // 2, int(height * 0.45),
+            0.3,
+        )
+        _deadline_sleep(deadline, SWIPE_SETTLE)
+        _checkpoint(deadline)
+        spans = ocr_screen(d, reader)
+        if spans is None or not in_taobao_and_safe(d, spans):
+            return None
+        action = find_unique_ocr_span(spans, MORE_COINS_ACTION)
+        if action is None:
+            continue
+        if not _is_coin_root_page(spans, screen):
+            return None    # 已落入推荐区：拒绝假入口
+        return action
+    return None
+
+
 def _is_coin_root_page(spans, screen_size):
     """淘金币根页面身份合同：顶部区域存在"淘金币"锚点。
 
@@ -1391,6 +1439,15 @@ def _reopen_task_popup(d, reader, screen, deadline=None):
 
             action = find_unique_ocr_span(spans, MORE_COINS_ACTION)
             _checkpoint(deadline)
+            if action is None and attempt == 0:
+                # 入口可能被奖励卡片/会员行挤出首屏（真机 2026-09-04）：
+                # 仅在首次尝试做有界下滑探索（后续重试只读屏，避免反复
+                # 滚动浪费时间）；推荐区假入口由 _scroll_coin_page_for_action
+                # 的"顶部锚点仍在"判据拒绝。
+                action = _scroll_coin_page_for_action(
+                    d, reader, screen, deadline=deadline
+                )
+                _checkpoint(deadline)
             if action is None:
                 if attempt == max_attempts - 1:
                     return False
