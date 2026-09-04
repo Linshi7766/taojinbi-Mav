@@ -9,6 +9,7 @@ easyocr / uiautomator2 仅在 __main__ 直接运行时加载。
 只在搜索结果页上下滑动，不点击商品。进度只在任务列表弹窗可读，绝不点击交易按钮。
 """
 
+import atexit
 import os
 import re
 import sys
@@ -97,6 +98,23 @@ def runtime_shot_path(pid=None):
 
 
 RUNTIME_SHOT = runtime_shot_path()   # _ocr_ 前缀已被 gitignore
+
+
+def _cleanup_runtime_shot(path=None, log=None):
+    """删除本次运行的截图临时文件；失败静默（清理失败不影响主流程）。
+
+    P1-7 引入进程唯一截图后，每次运行会留下一个 png；进程正常退出时
+    必须带走自己的文件，否则工作区会堆满历史截图。
+    """
+    target = Path(path) if path is not None else Path(RUNTIME_SHOT)
+    try:
+        if str(target.parent) in {"", "."}:
+            target.unlink(missing_ok=True)
+    except Exception:
+        pass   # 清理失败不覆盖主流程结果
+
+
+atexit.register(_cleanup_runtime_shot)
 
 
 def device_lock_name(serial):
