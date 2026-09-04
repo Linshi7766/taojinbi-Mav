@@ -5,7 +5,7 @@
 生成时间：2026-09-02
 验证：2026-09-02 复验（代码树 HEAD `7d2180f`；命令
 `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"`；
-Python 3.13 / Windows），导出目录离线测试 **521/521** 通过。
+Python 3.13 / Windows），导出目录离线测试 **524/524** 通过。
 
 本次同步 Codex 只读安全审计第 2/3 轮：扫描结果四态化（unsafe/OCR 失败绝不
 滚动或按返回）、likely_completed 证据链收紧、死代码清理、文档与四任务+签到
