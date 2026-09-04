@@ -209,6 +209,9 @@ MAX_BACKS = 6              # 返回任务列表的最大 back 次数
 REFRESH_LAG_GRACE_S = 120  # 任务行消失后的展示滞后宽限（浏览计数常延迟数分钟反映）
 MAX_LIST_SCROLLS = 8       # 弹窗内滚动查找“好物沉浸看”的最大次数
 ROOT_ACTION_SCROLLS = 2    # 根页下滑探索“赚更多金币”入口的最大次数（卡片占位时）
+# 纯滚动（根页滚顶 / 弹窗滚动 / 下滑探索）的稳定等待：滚动动画约 0.3-0.4s，
+# 1.2s 足够稳定且比 SWIPE_SETTLE(2s) 省一半；导航/动作后仍用 SWIPE_SETTLE。
+SCROLL_SETTLE_S = 1.2
 ENTRY_VALIDATION_RETRIES = 2  # 入口二次校验最多重试次数，防止 OCR 抖动导致无限循环
 ENTRY_RETRY_DELAY = 0.5       # 重试前短暂等待页面稳定
 
@@ -584,7 +587,7 @@ def _popup_scroll(d, screen, deadline=None):
     _checkpoint(deadline)
     d.swipe(width // 2, int(height * 0.70), width // 2, int(height * 0.45), 0.4)
     _checkpoint(deadline)
-    _deadline_sleep(deadline, SWIPE_SETTLE)
+    _deadline_sleep(deadline, SCROLL_SETTLE_S)
 
 
 def _popup_scroll_up(d, screen, deadline=None):
@@ -593,7 +596,7 @@ def _popup_scroll_up(d, screen, deadline=None):
     _checkpoint(deadline)
     d.swipe(width // 2, int(height * 0.45), width // 2, int(height * 0.70), 0.4)
     _checkpoint(deadline)
-    _deadline_sleep(deadline, SWIPE_SETTLE)
+    _deadline_sleep(deadline, SCROLL_SETTLE_S)
 
 
 def locate_immersive_target(d, reader, screen, max_scrolls=MAX_LIST_SCROLLS,
@@ -1195,21 +1198,44 @@ def _emit_task_finished(logger, task_log_key, status, reason):
         logger.emit("task_finished", task_key=task_log_key, status=status, reason=reason)
 
 
-def _scroll_coin_page_to_top(d, screen, deadline=None, max_swipes=3):
-    """淘金币页滚回顶部：连续向上滑（页面下移方向），最多 max_swipes 次。
+def _scroll_coin_page_to_top(d, reader, screen, deadline=None, max_swipes=3):
+    """淘金币页滚回顶部：向上滑直到"淘金币"锚点不再上移，最多 max_swipes 次。
 
     真机经验：页面可能被系统/用户滚动到推荐区，推荐卡片上的"赚更多金币"
     是假入口（点进去不是任务弹窗）。调用方需已确认包名安全（淘金币页）。
+
+    2026-09-04 优化：原实现无条件滑满 max_swipes 次（每次 2s），已在顶部
+    时纯浪费；现在滑动后读屏对比顶部锚点 y，不再上移即提前停（滚动等待
+    也降为 SCROLL_SETTLE_S）。读屏失败/锚点滚出视野时停止——由调用方的
+    根页身份合同重新校验，不在此越权判定。
     """
     width, height = screen
+    last_anchor_y = None
     for _ in range(max_swipes):
+        _checkpoint(deadline)
+        spans = ocr_screen(d, reader)
+        if spans is None or not in_taobao_and_safe(d, spans):
+            return
+        anchor_ys = [
+            span.center[1]
+            for span in spans
+            if COIN_PAGE_ANCHOR in span.text and span.center[1] <= height * 0.4
+        ]
+        if not anchor_ys:
+            return
+        anchor_y = min(anchor_ys)
+        if anchor_y <= height * 0.12:
+            return   # 锚点已在页面最顶部：无需滚动（快速路径）
+        if last_anchor_y is not None and anchor_y >= last_anchor_y:
+            return   # 不再上移：已到顶
+        last_anchor_y = anchor_y
         _checkpoint(deadline)
         d.swipe(
             width // 2, int(height * 0.45),
             width // 2, int(height * 0.70),
             0.3,
         )
-        _deadline_sleep(deadline, SWIPE_SETTLE)
+        _deadline_sleep(deadline, SCROLL_SETTLE_S)
 
 
 def _scroll_coin_page_for_action(d, reader, screen, deadline=None,
@@ -1237,7 +1263,7 @@ def _scroll_coin_page_for_action(d, reader, screen, deadline=None,
             width // 2, int(height * 0.45),
             0.3,
         )
-        _deadline_sleep(deadline, SWIPE_SETTLE)
+        _deadline_sleep(deadline, SCROLL_SETTLE_S)
         _checkpoint(deadline)
         spans = ocr_screen(d, reader)
         if spans is None or not in_taobao_and_safe(d, spans):
@@ -1429,7 +1455,7 @@ def _reopen_task_popup(d, reader, screen, deadline=None):
                 # （零动作失败关闭）；按钮缺失仍走下方有界重试。
                 if not _is_coin_root_page(spans, screen):
                     return False
-                _scroll_coin_page_to_top(d, screen, deadline=deadline)
+                _scroll_coin_page_to_top(d, reader, screen, deadline=deadline)
                 spans = ocr_screen(d, reader)
                 if not in_taobao_and_safe(d, spans):
                     return False

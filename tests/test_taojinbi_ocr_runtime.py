@@ -1410,12 +1410,19 @@ class PopupReopenRetryTests(unittest.TestCase):
 
     def test_scrolls_to_top_before_first_action_click(self):
         # 页面可能被系统/用户滚动到推荐区：推荐卡片上的"赚更多金币"是
-        # 假入口，点进去不是任务弹窗。首attempt必须先滚回顶部再点击。
+        # 假入口，点进去不是任务弹窗。锚点未在最顶部（y > 12%）时首
+        # attempt 必须先滚回顶部再点击。
         device = _GestureDevice()
-        spans = self._coin_page_spans(True)
+        spans = [
+            OcrSpan("淘金币", 0.99, (300, 300), (250, 280, 350, 320)),
+            OcrSpan(
+                "赚更多金币", 0.99, (500, 800),
+                (450, 780, 550, 820),
+            ),
+        ]
         with patch.object(
             runtime, "ocr_screen",
-            side_effect=[spans, spans],
+            side_effect=[spans, spans, spans, spans],
         ) as read, patch.object(
             runtime, "in_taobao_and_safe", return_value=True
         ) as safe, patch.object(
@@ -1442,8 +1449,9 @@ class PopupReopenRetryTests(unittest.TestCase):
             runtime,
             "ocr_screen",
             side_effect=[
-                self._coin_page_spans(False),
-                self._coin_page_spans(True),
+                self._coin_page_spans(False),   # 合同帧（无按钮）
+                self._coin_page_spans(False),   # 滚顶读屏（快速路径）
+                self._coin_page_spans(True),    # 找按钮帧（有按钮）
             ],
         ) as read, patch.object(
             runtime, "in_taobao_and_safe", return_value=True
@@ -1459,7 +1467,7 @@ class PopupReopenRetryTests(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 3)
         self.assertEqual(safe.call_count, read.call_count)
         tap.assert_called_once_with(device, (500, 800), (1080, 1920))
 
@@ -1527,13 +1535,14 @@ class PopupReopenRetryTests(unittest.TestCase):
             runtime,
             "ocr_screen",
             side_effect=[
-                self._coin_page_spans(False),
-                self._coin_page_spans(True),
+                self._coin_page_spans(False),   # 合同帧（无按钮）
+                self._coin_page_spans(False),   # 滚顶读屏：unsafe → 停
+                self._coin_page_spans(False),   # 回到 _reopen：unsafe → 停
             ],
         ) as read, patch.object(
             runtime,
             "in_taobao_and_safe",
-            side_effect=[True, False],
+            side_effect=[True, False, False],
         ) as safe, patch.object(runtime, "safe_tap") as tap, patch.object(
             runtime, "_deadline_sleep"
         ):
@@ -1542,7 +1551,7 @@ class PopupReopenRetryTests(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 3)
         self.assertEqual(safe.call_count, read.call_count)
         tap.assert_not_called()
 
@@ -1552,15 +1561,16 @@ class PopupReopenRetryTests(unittest.TestCase):
 
         def read_screen(*_args, **_kwargs):
             events.append("ocr")
-            # attempt0 首读有按钮 → 滚顶后重读仍有按钮（主页顶部）→ 点击并
-            # 校验失败 → attempt1/2 无按钮 → 有界失败
+            # attempt0 首读有按钮 → 滚顶读屏（2026-09-04 起滚顶会读屏）
+            # → 找按钮读屏仍有按钮 → 点击并校验失败 → attempt1/2 无按钮 → 有界失败
             frames = [
+                self._coin_page_spans(True),
                 self._coin_page_spans(True),
                 self._coin_page_spans(True),
                 self._coin_page_spans(False),
                 self._coin_page_spans(False),
             ]
-            return frames[events.count("ocr") - 1]
+            return frames[events.count("ocr") - 1] if events.count("ocr") <= len(frames) else None
 
         def check_safety(*_args, **_kwargs):
             events.append("safe")
@@ -1599,7 +1609,8 @@ class PopupReopenRetryTests(unittest.TestCase):
             if event == "ocr" and i > first_validation
         ]
         self.assertTrue(ocrs_after_validation)
-        self.assertEqual(read.call_count, 4)
+        # 滚顶读屏（2026-09-04 起）+ 重开链路读屏：5 次
+        self.assertEqual(read.call_count, 5)
         self.assertEqual(safe.call_count, read.call_count)
         self.assertEqual(tap.call_count, 1)
 
@@ -1940,6 +1951,11 @@ class ExecuteDeadlineTests(unittest.TestCase):
             stack.enter_context(patch.object(
                 runtime, "_settle_back_to_coin_page", return_value=True,
             ))
+            # 滚动等待恢复 2s 基线（2026-09-04 降到 1.2s 会改变 FakeClock
+            # 的推进量）：本类断言的是精确时钟累计，settle 值属实现细节。
+            stack.enter_context(patch.object(
+                runtime, "SCROLL_SETTLE_S", 2.0,
+            ))
             outcome = runtime.run_ocr_entry(
                 serial="test-device",
                 max_tasks=max_tasks,
@@ -1966,9 +1982,8 @@ class ExecuteDeadlineTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.object(
                 runtime, "_settle_back_to_coin_page",
-                side_effect=lambda _d, _r, deadline=None: (
-                    called.setdefault("settled", True),
-                    called.setdefault("deadline", deadline),
+                side_effect=lambda _d, _r, deadline=None: called.update(
+                    settled=True, deadline=deadline,
                 ),
             ))
             runtime.run_ocr_entry(
@@ -2961,6 +2976,46 @@ class ReopenTaskPopupScrollTests(unittest.TestCase):
             result = runtime._reopen_task_popup(device, reader, self.SCREEN)
         self.assertTrue(result)
         self.assertEqual(device.tap_count, 1)
+
+
+class ScrollToTopEarlyStopTests(unittest.TestCase):
+    """2026-09-04 优化：滚顶不再无条件滑满 3 次——锚点 y 不再上移即提前停
+    （每次重开弹窗省 2 次滑动 ≈ 4-6 秒）。"""
+
+    @staticmethod
+    def _anchor(y):
+        return [OcrSpan("淘金币", 0.99, (220, y), (150, y - 20, 290, y + 20))]
+
+    def test_stops_after_one_swipe_when_already_at_top(self):
+        device = _ActionDevice()
+        with patch.object(
+            runtime, "ocr_screen", return_value=self._anchor(200)
+        ), patch.object(runtime, "in_taobao_and_safe", return_value=True):
+            runtime._scroll_coin_page_to_top(device, None, (1080, 1920))
+        # 锚点已在页面最顶部（y ≤ 12% 屏高）：快速路径零滑动
+        self.assertEqual(device.swipe_count, 0)
+
+    def test_sweeps_full_budget_when_anchor_keeps_rising(self):
+        device = _ActionDevice()
+        with patch.object(
+            runtime,
+            "ocr_screen",
+            side_effect=[self._anchor(400), self._anchor(350),
+                         self._anchor(320), self._anchor(310)],
+        ), patch.object(runtime, "in_taobao_and_safe", return_value=True):
+            runtime._scroll_coin_page_to_top(device, None, (1080, 1920))
+        self.assertEqual(device.swipe_count, 3)
+
+    def test_stops_when_anchor_scrolled_out(self):
+        device = _ActionDevice()
+        with patch.object(
+            runtime, "ocr_screen",
+            side_effect=[self._anchor(300), [OcrSpan(
+                "推荐", 0.9, (200, 300), (150, 280, 250, 320),
+            )]],
+        ), patch.object(runtime, "in_taobao_and_safe", return_value=True):
+            runtime._scroll_coin_page_to_top(device, None, (1080, 1920))
+        self.assertEqual(device.swipe_count, 1)   # 锚点滚出：停，交由上层校验
 
 
 class RecoverToHomeAndRenavigateTests(unittest.TestCase):
